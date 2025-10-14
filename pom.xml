@@ -201,6 +201,8 @@ LICENSE file.
     <module>s3</module>
     <module>seaweedfs</module>
     <module>scylla</module>
+    <!--customized kv-->
+    <module>sharedkv</module>
     <module>solr7</module>
     <module>tarantool</module>
     <module>tablestore</module>

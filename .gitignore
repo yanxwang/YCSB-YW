@@ -1,25 +1,32 @@
-# ignore compiled byte code
-target
+# Build artifacts
+*.o
+*.so
+*.a
+*.dylib
+*.dll
+*.class
+*.jar
+target/
 
-# ignore output files from testing
-output*
-
-# ignore standard Eclipse files
-.project
-.classpath
-.settings
-.checkstyle
-
-# ignore standard IntelliJ files
+# IDE files
+.vscode/
 .idea/
-*.iml
-*.ipr
-*.iws
-
-# ignore standard Vim and Emacs temp files
 *.swp
+*.swo
 *~
 
-# ignore standard Mac OS X files/dirs
+# OS files
 .DS_Store
-/differentbin/
+Thumbs.db
+
+# Compiled binaries
+bin/
+build/
+out/
+
+# Java specific
+*.log
+hs_err_pid*
+
+# Native libraries
+*.jnilib
