@@ -65,11 +65,22 @@ void put_to_jmap(JNIEnv* env, jobject jmap, const std::string& key, const std::s
 
 extern "C" {
 
-JNIEXPORT jlong JNICALL 
+JNIEXPORT jlong JNICALL
 Java_site_ycsb_db_sharedkv_SharedKVClient_nativeInit(JNIEnv* env, jobject obj, jstring devicePath) {
     std::string path = jstring_to_string(env, devicePath);
     try {
         SharedKV_YCSB* db = new SharedKV_YCSB(path.c_str());
+        return reinterpret_cast<jlong>(db);
+    } catch (const std::exception& e) {
+        // Return 0 to indicate failure
+        return 0;
+    }
+}
+
+JNIEXPORT jlong JNICALL
+Java_site_ycsb_db_sharedkv_SharedKVClient_nativeInitCXL(JNIEnv* env, jobject obj, jint numaNode) {
+    try {
+        SharedKV_YCSB* db = new SharedKV_YCSB(static_cast<int>(numaNode));
         return reinterpret_cast<jlong>(db);
     } catch (const std::exception& e) {
         // Return 0 to indicate failure

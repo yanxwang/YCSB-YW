@@ -1,12 +1,16 @@
-recordcount=10000
-operationcount=10000
+# Quick test workload for SharedKV CXL mode
+recordcount=1000
+operationcount=1000
 workload=site.ycsb.workloads.CoreWorkload
 
 readallfields=true
-
 readproportion=0.5
 updateproportion=0.5
 scanproportion=0
 insertproportion=0
 
-requestdistribution=zipfian
+requestdistribution=uniform
+
+# CXL mode on NUMA node 2 (default)
+sharedkv.mode=cxl
+sharedkv.numa_node=2

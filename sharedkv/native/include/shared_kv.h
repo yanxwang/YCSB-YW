@@ -41,8 +41,11 @@ struct ThreadStats {
     uint64_t thread_time_ns = 0;
 };
 
-// map the shared memory
+// map the shared memory (for PMem/file-based)
 void* map_shared_memory(const char* path, size_t size);
+
+// allocate CXL memory via NUMA
+void* allocate_cxl_memory(int numa_node, size_t size);
 
 // KV store operations
 void kv_put(SharedHashTable* table, void* base,

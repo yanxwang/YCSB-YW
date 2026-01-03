@@ -1,4 +1,5 @@
 // shared_kv_buckets.cpp
+#include "shared_kv.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -13,13 +14,10 @@
 #include <sys/mman.h>
 #include <unistd.h>
 #include <random>
+#include <numa.h>
+#include <numaif.h>
 
 using namespace std::chrono;
-
-// -------- config --------
-#define SHM_SIZE (16UL * 1024 * 1024 * 1024) // 16 GiB (adjust if needed)
-#define NUM_BUCKETS 4096                     // number of buckets (tunable)
-#define MAGIC_INIT 0xC0DEBEEFDEADF00DULL
 
 // -------- low-level mapping --------
 void* map_shared_memory(const char* dev_path, size_t size) {
@@ -31,40 +29,76 @@ void* map_shared_memory(const char* dev_path, size_t size) {
     return addr;
 }
 
-// -------- spinlock (simple) --------
-struct SpinLock {
-    std::atomic_flag flag = ATOMIC_FLAG_INIT;
-    inline void acquire() {
-        while (flag.test_and_set(std::memory_order_acquire)) {
-            // busy-wait; optionally use pause/relax
-            asm volatile("pause" ::: "memory");
-        }
+// -------- CXL/NUMA allocation --------
+void* allocate_cxl_memory(int numa_node, size_t size) {
+    if (numa_available() < 0) {
+        fprintf(stderr, "NUMA not available\n");
+        exit(1);
     }
-    inline void release() {
-        flag.clear(std::memory_order_release);
+
+    fprintf(stderr, "CXL: Starting allocation of %zu bytes on NUMA node %d...\n", size, numa_node);
+    fflush(stderr);
+    auto t_start = std::chrono::high_resolution_clock::now();
+
+    // Set NUMA policy BEFORE mmap
+    unsigned long nodemask = 1UL << numa_node;
+    unsigned long maxnode = sizeof(nodemask) * 8;
+
+    // Use mmap + mbind for strict node binding
+    void* addr = mmap(nullptr, size, PROT_READ | PROT_WRITE,
+                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (addr == MAP_FAILED) {
+        perror("mmap failed");
+        exit(1);
     }
-};
+
+    auto t_mmap = std::chrono::high_resolution_clock::now();
+    auto mmap_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t_mmap - t_start).count();
+    fprintf(stderr, "CXL: mmap took %ld ms\n", mmap_ms);
+    fflush(stderr);
+
+    // Bind memory policy to specific NUMA node (for future page faults)
+    if (mbind(addr, size, MPOL_BIND, &nodemask, maxnode, MPOL_MF_STRICT) != 0) {
+        perror("mbind failed");
+        fprintf(stderr, "Failed to bind %zu bytes to NUMA node %d\n", size, numa_node);
+        munmap(addr, size);
+        exit(1);
+    }
+
+    auto t_mbind = std::chrono::high_resolution_clock::now();
+    auto mbind_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t_mbind - t_mmap).count();
+    fprintf(stderr, "CXL: mbind took %ld ms\n", mbind_ms);
+    fflush(stderr);
+
+    // Touch first page to trigger allocation and verify the memory is on the correct node
+    *(volatile char*)addr = 0;
+
+    int actual_node = -1;
+    if (get_mempolicy(&actual_node, nullptr, 0, addr, MPOL_F_NODE | MPOL_F_ADDR) == 0) {
+        fprintf(stderr, "CXL: Allocated %zu bytes on NUMA node %d (requested: %d)\n",
+               size, actual_node, numa_node);
+        fflush(stderr);
+    }
+
+    // NO MEMSET - MAP_POPULATE already zeroed the pages!
+    // memset(addr, 0, size);  // <-- REMOVED: This was redundant and slow!
+
+    auto t_end = std::chrono::high_resolution_clock::now();
+    auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t_end - t_start).count();
+    fprintf(stderr, "CXL: Total allocation time: %ld ms\n", total_ms);
+    fflush(stderr);
+
+    return addr;
+}
 
 // -------- shared data layout (offset-based) --------
+// KVEntry implementation (opaque in header)
 struct KVEntry {
     uint64_t key_hash;
     uint32_t key_len;
     uint32_t value_len;
     uint64_t next_offset; // 0 == null
     char data[0]; // follows (key bytes then value bytes)
-};
-
-struct Bucket {
-    SpinLock lock;
-    uint64_t head_offset; // offset from base; 0 == empty
-};
-
-struct SharedHashTable {
-    uint64_t magic;                 // magic to detect initialization
-    std::atomic<uint64_t> free_offset;
-    uint64_t reserved;              // padding / future use
-    Bucket buckets[NUM_BUCKETS];
-    // KV entries allocated after sizeof(SharedHashTable)
 };
 
 // -------- helpers --------
@@ -100,7 +134,7 @@ KVEntry* alloc_entry(SharedHashTable* table, void* base,
 
 void kv_put(SharedHashTable* table, void* base,
             const std::string& key, const std::string& value,
-            uint64_t* wait_ns_out = nullptr) {
+            uint64_t* wait_ns_out) {
     uint64_t h = hash_key(key);
     uint64_t idx = h % NUM_BUCKETS;
     Bucket* b = &table->buckets[idx];
@@ -124,7 +158,7 @@ void kv_put(SharedHashTable* table, void* base,
 
 bool kv_get(SharedHashTable* table, void* base,
             const std::string& key, std::string& out_value,
-            uint64_t* wait_ns_out = nullptr) {
+            uint64_t* wait_ns_out) {
     uint64_t h = hash_key(key);
     uint64_t idx = h % NUM_BUCKETS;
     Bucket* b = &table->buckets[idx];
@@ -156,7 +190,7 @@ bool kv_get(SharedHashTable* table, void* base,
 
 bool kv_delete(SharedHashTable* table, void* base,
                const std::string& key,
-               uint64_t* wait_ns_out = nullptr) {
+               uint64_t* wait_ns_out) {
     uint64_t h = hash_key(key);
     uint64_t idx = h % NUM_BUCKETS;
     Bucket* b = &table->buckets[idx];
@@ -194,13 +228,7 @@ bool kv_delete(SharedHashTable* table, void* base,
 
 
 // -------- benchmarking & stats --------
-struct ThreadStats {
-    uint64_t ops_completed = 0;
-    uint64_t successful_puts = 0;
-    uint64_t successful_gets = 0;
-    uint64_t lock_wait_ns = 0;
-    uint64_t thread_time_ns = 0;
-};
+// ThreadStats struct is defined in shared_kv.h
 
 void worker_thread(SharedHashTable* table, void* base, int tid, int ops, ThreadStats* stat) {
     using namespace std::chrono;

@@ -1,0 +1,28 @@
+# SharedKV CXL Workload Configuration
+# Yahoo! Cloud System Benchmark
+# Workload optimized for CXL memory access patterns
+
+# Data size configuration
+recordcount=1000000
+operationcount=1000000
+workload=site.ycsb.workloads.CoreWorkload
+
+# Field configuration
+readallfields=true
+
+# Operation mix (50% reads, 50% updates - typical KV workload)
+readproportion=0.5
+updateproportion=0.5
+scanproportion=0
+insertproportion=0
+
+# Request distribution (Zipfian models real-world access patterns)
+requestdistribution=zipfian
+
+# CXL-specific configuration
+# Use CXL mode (default, can be omitted)
+sharedkv.mode=cxl
+
+# Target NUMA node 2 where CXL memory is located
+# This corresponds to /dev/dax0.0 in system-ram mode
+sharedkv.numa_node=2

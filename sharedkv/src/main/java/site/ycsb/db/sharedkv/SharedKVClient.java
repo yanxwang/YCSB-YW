@@ -41,6 +41,8 @@ public class SharedKVClient extends DB {
 
   private native long nativeInit(String devicePath);
 
+  private native long nativeInitCXL(int numaNode);
+
   private native void nativeDestroy(long handle);
 
   private native int nativeRead(long handle, String key, Map<String, String> result);
@@ -54,9 +56,22 @@ public class SharedKVClient extends DB {
   @Override
   public void init() throws DBException {
     try {
-      String devicePath = getProperties().getProperty("sharedkv.device", "/dev/pmem0");
-      System.err.println("DEBUG: Initializing SharedKV with device: " + devicePath);
-      nativeHandle = nativeInit(devicePath);
+      // Default to CXL mode on NUMA node 2
+      String mode = getProperties().getProperty("sharedkv.mode", "cxl");
+
+      if ("pmem".equalsIgnoreCase(mode)) {
+        // Legacy PMem mode (for backward compatibility)
+        String devicePath = getProperties().getProperty("sharedkv.device", "/dev/pmem0");
+        System.err.println("DEBUG: Initializing SharedKV in PMem mode with device: " + devicePath);
+        nativeHandle = nativeInit(devicePath);
+      } else {
+        // Default CXL mode: use NUMA node allocation
+        String numaNodeStr = getProperties().getProperty("sharedkv.numa_node", "2");
+        int numaNode = Integer.parseInt(numaNodeStr);
+        System.err.println("DEBUG: Initializing SharedKV in CXL mode on NUMA node: " + numaNode);
+        nativeHandle = nativeInitCXL(numaNode);
+      }
+
       System.err.println("DEBUG: Native handle: " + nativeHandle);
       if (nativeHandle == 0) {
         throw new DBException("Failed to initialize SharedKV - nativeInit returned 0");

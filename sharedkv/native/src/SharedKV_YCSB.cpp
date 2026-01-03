@@ -3,9 +3,13 @@
 #include <map>
 #include <string>
 #include <sstream>
+#include <numa.h>
+#include <sys/mman.h>
 
 // Implementation of SharedKV_YCSB methods
-SharedKV_YCSB::SharedKV_YCSB(const char* dev_path) {
+
+// Constructor for PMem/file mode
+SharedKV_YCSB::SharedKV_YCSB(const char* dev_path) : is_cxl_mode(false), numa_node(-1) {
     base = map_shared_memory(dev_path, SHM_SIZE);
     table = (SharedHashTable*)base;
 
@@ -20,6 +24,30 @@ SharedKV_YCSB::SharedKV_YCSB(const char* dev_path) {
         }
         __sync_synchronize();
     }
+}
+
+// Constructor for CXL/NUMA mode
+SharedKV_YCSB::SharedKV_YCSB(int node) : is_cxl_mode(true), numa_node(node) {
+    base = allocate_cxl_memory(node, SHM_SIZE);
+    table = (SharedHashTable*)base;
+
+    // Initialize table (always fresh in CXL mode since it's volatile DRAM)
+    table->magic = MAGIC_INIT;
+    table->free_offset.store(sizeof(SharedHashTable));
+    table->reserved = 0;
+    for (size_t i = 0; i < NUM_BUCKETS; ++i) {
+        table->buckets[i].head_offset = 0;
+        table->buckets[i].lock.flag.clear(std::memory_order_relaxed);
+    }
+    __sync_synchronize();
+}
+
+// Destructor
+SharedKV_YCSB::~SharedKV_YCSB() {
+    if (is_cxl_mode && base != nullptr) {
+        munmap(base, SHM_SIZE);
+    }
+    // For PMem mode, munmap would be done here if needed
 }
 
 // Helper: Serialize map to string

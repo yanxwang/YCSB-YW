@@ -26,10 +26,17 @@ class SharedKV_YCSB : public DB {
 private:
     void* base;
     SharedHashTable* table;
+    bool is_cxl_mode;
+    int numa_node;
 
 public:
-    SharedKV_YCSB(const char* path = "/dev/pmem0");
-    virtual ~SharedKV_YCSB() {}
+    // Default constructor: CXL mode on node 2
+    SharedKV_YCSB(int numa_node = 2);
+
+    // Legacy constructor for PMem/device mode
+    SharedKV_YCSB(const char* path);
+
+    virtual ~SharedKV_YCSB();
 
     int read(const std::string& table_name, const std::string& key,
              std::map<std::string, std::string>& result) override;
