@@ -184,6 +184,8 @@ KVResponse SharedKVContext::submit_request(uint32_t client_id, KVRequest* req,
 
     ClientChannel* ch = clients[client_id];
 
+    auto t0 = std::chrono::high_resolution_clock::now();
+
     // Enqueue request (blocking if queue is full)
     while (!ch->req_q->enqueue(req)) {
         if (stop_flag.load(std::memory_order_relaxed)) {
@@ -194,6 +196,8 @@ KVResponse SharedKVContext::submit_request(uint32_t client_id, KVRequest* req,
         std::this_thread::yield();
     }
 
+    auto t1 = std::chrono::high_resolution_clock::now();
+
     ch->requests_sent.fetch_add(1, std::memory_order_relaxed);
 
     // Wait for response with timeout
@@ -201,22 +205,38 @@ KVResponse SharedKVContext::submit_request(uint32_t client_id, KVRequest* req,
                    std::chrono::milliseconds(timeout_ms);
 
     KVResponse resp;
+    uint64_t spin_count = 0;
     while (true) {
         if (ch->resp_q->dequeue(resp)) {
             ch->responses_received.fetch_add(1, std::memory_order_relaxed);
+
+            auto t2 = std::chrono::high_resolution_clock::now();
+            auto enqueue_us = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
+            auto wait_us = std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count();
+
+            // Sample 1 in 10000 requests for latency breakdown
+            if ((ch->responses_received.load() % 10000) == 0) {
+                fprintf(stderr, "[Latency] client=%u enqueue=%ld us, wait=%ld us, spins=%lu\n",
+                        client_id, enqueue_us, wait_us, spin_count);
+            }
+
             return resp;
+        }
+
+        spin_count++;
+
+        // Adaptive spinning: yield after some iterations to reduce CPU waste
+        if (spin_count > 100) {
+            std::this_thread::yield();
         }
 
         // Check timeout
         if (std::chrono::steady_clock::now() >= deadline) {
-            fprintf(stderr, "[SharedKVContext] Request timeout for client %u after %lu ms\n",
-                    client_id, timeout_ms);
+            fprintf(stderr, "[SharedKVContext] Request timeout for client %u after %lu ms (spins=%lu)\n",
+                    client_id, timeout_ms, spin_count);
             resp.status = KVStatus::ERROR;
             return resp;
         }
-
-        // Brief yield
-        std::this_thread::yield();
     }
 }
 

@@ -1,0 +1,248 @@
+wang@g1:~/YCSB-YW$ java -Djava.library.path=/usr/lib   -cp "sharedkv/target/sharedkv-binding-0.18.0-SNAPSHOT.jar:core/target/core-0.18.0-SNAPSHOT.jar:$(find core/target/dependency -name '*.jar' | tr '\n' ':')"   site.ycsb.Client   -db site.ycsb.db.sharedkv.SharedKVClient   -P workloads/workloada   -p sharedkv.mode=cxl   -p sharedkv.threading=multi   -p sharedkv
+.numa_node=3   -p sharedkv.num_clients=16   -p sharedkv.num_workers=16   -threads 16   -load   -p recordcount=1000000   2
+>/dev/null | tee results_workloada_load.txt
+[OVERALL], RunTime(ms), 62685
+[OVERALL], Throughput(ops/sec), 15952.77977187525
+[TOTAL_GCS_G1_Young_Generation], Count, 9
+[TOTAL_GC_TIME_G1_Young_Generation], Time(ms), 143
+[TOTAL_GC_TIME_%_G1_Young_Generation], Time(%), 0.22812475073781605
+[TOTAL_GCS_G1_Concurrent_GC], Count, 0
+[TOTAL_GC_TIME_G1_Concurrent_GC], Time(ms), 0
+[TOTAL_GC_TIME_%_G1_Concurrent_GC], Time(%), 0.0
+[TOTAL_GCS_G1_Old_Generation], Count, 0
+[TOTAL_GC_TIME_G1_Old_Generation], Time(ms), 0
+[TOTAL_GC_TIME_%_G1_Old_Generation], Time(%), 0.0
+[TOTAL_GCs], Count, 9
+[TOTAL_GC_TIME], Time(ms), 143
+[TOTAL_GC_TIME_%], Time(%), 0.22812475073781605
+[CLEANUP], Operations, 16
+[CLEANUP], AverageLatency(us), 57.0625
+[CLEANUP], MinLatency(us), 11
+[CLEANUP], MaxLatency(us), 690
+[CLEANUP], 50thPercentileLatency(us), 15
+[CLEANUP], 95thPercentileLatency(us), 690
+[CLEANUP], 99thPercentileLatency(us), 690
+[INSERT], Operations, 1000000
+[INSERT], AverageLatency(us), 993.62508
+[INSERT], MinLatency(us), 25
+[INSERT], MaxLatency(us), 34175
+[INSERT], 50thPercentileLatency(us), 153
+[INSERT], 95thPercentileLatency(us), 3623
+[INSERT], 99thPercentileLatency(us), 4183
+[INSERT], Return=OK, 1000000
+
+
+
+
+wang@g1:~/YCSB-YW$ java -Djava.library.path=/usr/lib   -cp "sharedkv/target/sharedkv-binding-0.18.0-SNAPSHOT.jar:core/target/core-0.18.0-SNAPSHOT.jar:$(find core/target/dependency -name '*.jar' | tr '\n' ':')"   site.ycsb.Client   -db site.ycsb.db.sharedkv.SharedKVClient   -P workloads/workloada   -p sharedkv.mode=cxl   -p sharedkv.threading=multi   -p sharedkv.numa_node=3   -p sharedkv.num_clients=16   -p sharedkv.num_workers=16   -threads 16   -t   -p recordcount=1000000   2>/d
+ev/null | tee results_workloada_load.txt
+[OVERALL], RunTime(ms), 76
+[OVERALL], Throughput(ops/sec), 13157.894736842105
+[TOTAL_GCS_G1_Young_Generation], Count, 0
+[TOTAL_GC_TIME_G1_Young_Generation], Time(ms), 0
+[TOTAL_GC_TIME_%_G1_Young_Generation], Time(%), 0.0
+[TOTAL_GCS_G1_Concurrent_GC], Count, 0
+[TOTAL_GC_TIME_G1_Concurrent_GC], Time(ms), 0
+[TOTAL_GC_TIME_%_G1_Concurrent_GC], Time(%), 0.0
+[TOTAL_GCS_G1_Old_Generation], Count, 0
+[TOTAL_GC_TIME_G1_Old_Generation], Time(ms), 0
+[TOTAL_GC_TIME_%_G1_Old_Generation], Time(%), 0.0
+[TOTAL_GCs], Count, 0
+[TOTAL_GC_TIME], Time(ms), 0
+[TOTAL_GC_TIME_%], Time(%), 0.0
+[READ], Operations, 52
+[READ], AverageLatency(us), 63.38461538461539
+[READ], MinLatency(us), 30
+[READ], MaxLatency(us), 464
+[READ], 50thPercentileLatency(us), 44
+[READ], 95thPercentileLatency(us), 266
+[READ], 99thPercentileLatency(us), 464
+[READ], Return=OK, 52
+[READ], Return=NOT_FOUND, 451
+[CLEANUP], Operations, 16
+[CLEANUP], AverageLatency(us), 21.9375
+[CLEANUP], MinLatency(us), 15
+[CLEANUP], MaxLatency(us), 85
+[CLEANUP], 50thPercentileLatency(us), 18
+[CLEANUP], 95thPercentileLatency(us), 85
+[CLEANUP], 99thPercentileLatency(us), 85
+[READ-FAILED], Operations, 451
+[READ-FAILED], AverageLatency(us), 42.988913525498894
+[READ-FAILED], MinLatency(us), 9
+[READ-FAILED], MaxLatency(us), 1821
+[READ-FAILED], 50thPercentileLatency(us), 21
+[READ-FAILED], 95thPercentileLatency(us), 51
+[READ-FAILED], 99thPercentileLatency(us), 839
+[UPDATE], Operations, 497
+[UPDATE], AverageLatency(us), 239.32796780684106
+[UPDATE], MinLatency(us), 57
+[UPDATE], MaxLatency(us), 2669
+[UPDATE], 50thPercentileLatency(us), 157
+[UPDATE], 95thPercentileLatency(us), 600
+[UPDATE], 99thPercentileLatency(us), 2509
+[UPDATE], Return=OK, 497
+
+
+
+
+
+wang@g1:~/YCSB-YW$ java -Djava.library.path=/usr/lib   -cp "sharedkv/target/sharedkv-binding-0.18.0-SNAPSHOT.jar:core/target/core-0.18.0-SNAPSHOT.jar:$(find core/target/dependency -name '*.jar' | tr '\n' ':')"   site.ycsb.Client   -db site.ycsb.db.sharedkv.SharedKVClient   -P workloads/workloadb   -p sharedkv.mode=cxl   -p sharedkv.threading=multi   -p sharedkv
+.numa_node=3   -p sharedkv.num_clients=16   -p sharedkv.num_workers=16   -threads 16   -load   -p recordcount=1000000   2
+>/dev/null | tee results_workloada_load.txt
+[OVERALL], RunTime(ms), 67601
+[OVERALL], Throughput(ops/sec), 14792.680581648201
+[TOTAL_GCS_G1_Young_Generation], Count, 9
+[TOTAL_GC_TIME_G1_Young_Generation], Time(ms), 135
+[TOTAL_GC_TIME_%_G1_Young_Generation], Time(%), 0.19970118785225072
+[TOTAL_GCS_G1_Concurrent_GC], Count, 0
+[TOTAL_GC_TIME_G1_Concurrent_GC], Time(ms), 0
+[TOTAL_GC_TIME_%_G1_Concurrent_GC], Time(%), 0.0
+[TOTAL_GCS_G1_Old_Generation], Count, 0
+[TOTAL_GC_TIME_G1_Old_Generation], Time(ms), 0
+[TOTAL_GC_TIME_%_G1_Old_Generation], Time(%), 0.0
+[TOTAL_GCs], Count, 9
+[TOTAL_GC_TIME], Time(ms), 135
+[TOTAL_GC_TIME_%], Time(%), 0.19970118785225072
+[CLEANUP], Operations, 16
+[CLEANUP], AverageLatency(us), 62.75
+[CLEANUP], MinLatency(us), 7
+[CLEANUP], MaxLatency(us), 789
+[CLEANUP], 50thPercentileLatency(us), 15
+[CLEANUP], 95thPercentileLatency(us), 789
+[CLEANUP], 99thPercentileLatency(us), 789
+[INSERT], Operations, 1000000
+[INSERT], AverageLatency(us), 1067.092102
+[INSERT], MinLatency(us), 18
+[INSERT], MaxLatency(us), 37951
+[INSERT], 50thPercentileLatency(us), 149
+[INSERT], 95thPercentileLatency(us), 3785
+[INSERT], 99thPercentileLatency(us), 4327
+[INSERT], Return=OK, 1000000
+
+
+
+wang@g1:~/YCSB-YW$ java -Djava.library.path=/usr/lib   -cp "sharedkv/target/sharedkv-binding-0.18.0-SNAPSHOT.jar:core/target/core-0.18.0-SNAPSHOT.jar:$(find core/target/dependency -name '*.jar' | tr '\n' ':')"   site.ycsb.Client   -db site.ycsb.db.sharedkv.SharedKVClient   -P workloads/workloadb   -p sharedkv.mode=cxl   -p sharedkv.threading=multi   -p sharedkv.numa_node=3   -p sharedkv.num_clients=16   -p sharedkv.num_workers=16   -threads 16   -t   -p recordcount=1000000   2>/d
+ev/null | tee results_workloada_load.txt
+[OVERALL], RunTime(ms), 92
+[OVERALL], Throughput(ops/sec), 10869.565217391304
+[TOTAL_GCS_G1_Young_Generation], Count, 0
+[TOTAL_GC_TIME_G1_Young_Generation], Time(ms), 0
+[TOTAL_GC_TIME_%_G1_Young_Generation], Time(%), 0.0
+[TOTAL_GCS_G1_Concurrent_GC], Count, 0
+[TOTAL_GC_TIME_G1_Concurrent_GC], Time(ms), 0
+[TOTAL_GC_TIME_%_G1_Concurrent_GC], Time(%), 0.0
+[TOTAL_GCS_G1_Old_Generation], Count, 0
+[TOTAL_GC_TIME_G1_Old_Generation], Time(ms), 0
+[TOTAL_GC_TIME_%_G1_Old_Generation], Time(%), 0.0
+[TOTAL_GCs], Count, 0
+[TOTAL_GC_TIME], Time(ms), 0
+[TOTAL_GC_TIME_%], Time(%), 0.0
+[READ], Operations, 45
+[READ], AverageLatency(us), 75.11111111111111
+[READ], MinLatency(us), 27
+[READ], MaxLatency(us), 299
+[READ], 50thPercentileLatency(us), 64
+[READ], 95thPercentileLatency(us), 123
+[READ], 99thPercentileLatency(us), 299
+[READ], Return=OK, 45
+[READ], Return=NOT_FOUND, 907
+[CLEANUP], Operations, 16
+[CLEANUP], AverageLatency(us), 30.625
+[CLEANUP], MinLatency(us), 14
+[CLEANUP], MaxLatency(us), 102
+[CLEANUP], 50thPercentileLatency(us), 23
+[CLEANUP], 95thPercentileLatency(us), 102
+[CLEANUP], 99thPercentileLatency(us), 102
+[READ-FAILED], Operations, 907
+[READ-FAILED], AverageLatency(us), 63.82469680264609
+[READ-FAILED], MinLatency(us), 7
+[READ-FAILED], MaxLatency(us), 3039
+[READ-FAILED], 50thPercentileLatency(us), 26
+[READ-FAILED], 95thPercentileLatency(us), 73
+[READ-FAILED], 99thPercentileLatency(us), 1970
+[UPDATE], Operations, 48
+[UPDATE], AverageLatency(us), 251.3125
+[UPDATE], MinLatency(us), 127
+[UPDATE], MaxLatency(us), 2405
+[UPDATE], 50thPercentileLatency(us), 186
+[UPDATE], 95thPercentileLatency(us), 445
+[UPDATE], 99thPercentileLatency(us), 2405
+[UPDATE], Return=OK, 48
+
+
+
+
+wang@g1:~/YCSB-YW$ java -Djava.library.path=/usr/lib   -cp "sharedkv/target/sharedkv-binding-0.18.0-SNAPSHOT.jar:core/target/core-0.18.0-SNAPSHOT.jar:$(find core/target/dependency -name '*.jar' | tr '\n' ':')"   site.ycsb.Client   -db site.ycsb.db.sharedkv.SharedKVClient   -P workloads/workloadc   -p sharedkv.mode=cxl   -p sharedkv.threading=multi   -p sharedkv
+.numa_node=3   -p sharedkv.num_clients=16   -p sharedkv.num_workers=16   -threads 16   -load   -p recordcount=1000000   2
+>/dev/null | tee results_workloada_load.txt
+[OVERALL], RunTime(ms), 65628
+[OVERALL], Throughput(ops/sec), 15237.398671298835
+[TOTAL_GCS_G1_Young_Generation], Count, 9
+[TOTAL_GC_TIME_G1_Young_Generation], Time(ms), 138
+[TOTAL_GC_TIME_%_G1_Young_Generation], Time(%), 0.21027610166392394
+[TOTAL_GCS_G1_Concurrent_GC], Count, 0
+[TOTAL_GC_TIME_G1_Concurrent_GC], Time(ms), 0
+[TOTAL_GC_TIME_%_G1_Concurrent_GC], Time(%), 0.0
+[TOTAL_GCS_G1_Old_Generation], Count, 0
+[TOTAL_GC_TIME_G1_Old_Generation], Time(ms), 0
+[TOTAL_GC_TIME_%_G1_Old_Generation], Time(%), 0.0
+[TOTAL_GCs], Count, 9
+[TOTAL_GC_TIME], Time(ms), 138
+[TOTAL_GC_TIME_%], Time(%), 0.21027610166392394
+[CLEANUP], Operations, 16
+[CLEANUP], AverageLatency(us), 39.875
+[CLEANUP], MinLatency(us), 6
+[CLEANUP], MaxLatency(us), 474
+[CLEANUP], 50thPercentileLatency(us), 12
+[CLEANUP], 95thPercentileLatency(us), 474
+[CLEANUP], 99thPercentileLatency(us), 474
+[INSERT], Operations, 1000000
+[INSERT], AverageLatency(us), 1040.404406
+[INSERT], MinLatency(us), 20
+[INSERT], MaxLatency(us), 38975
+[INSERT], 50thPercentileLatency(us), 150
+[INSERT], 95thPercentileLatency(us), 3659
+[INSERT], 99thPercentileLatency(us), 4207
+[INSERT], Return=OK, 1000000
+
+
+
+
+wang@g1:~/YCSB-YW$ java -Djava.library.path=/usr/lib   -cp "sharedkv/target/sharedkv-binding-0.18.0-SNAPSHOT.jar:core/target/core-0.18.0-SNAPSHOT.jar:$(find core/target/dependency -name '*.jar' | tr '\n' ':')"   site.ycsb.Client   -db site.ycsb.db.sharedkv.SharedKVClient   -P workloads/workloadc   -p sharedkv.mode=cxl   -p sharedkv.threading=multi   -p sharedkv.numa_node=3   -p sharedkv.num_clients=16   -p sharedkv.num_workers=16   -threads 16   -t   -p recordcount=1000000   2>/d
+ev/null | tee results_workloada_load.txt
+[OVERALL], RunTime(ms), 77
+[OVERALL], Throughput(ops/sec), 12987.012987012988
+[TOTAL_GCS_G1_Young_Generation], Count, 0
+[TOTAL_GC_TIME_G1_Young_Generation], Time(ms), 0
+[TOTAL_GC_TIME_%_G1_Young_Generation], Time(%), 0.0
+[TOTAL_GCS_G1_Concurrent_GC], Count, 0
+[TOTAL_GC_TIME_G1_Concurrent_GC], Time(ms), 0
+[TOTAL_GC_TIME_%_G1_Concurrent_GC], Time(%), 0.0
+[TOTAL_GCS_G1_Old_Generation], Count, 0
+[TOTAL_GC_TIME_G1_Old_Generation], Time(ms), 0
+[TOTAL_GC_TIME_%_G1_Old_Generation], Time(%), 0.0
+[TOTAL_GCs], Count, 0
+[TOTAL_GC_TIME], Time(ms), 0
+[TOTAL_GC_TIME_%], Time(%), 0.0
+[READ], Operations, 0
+[READ], AverageLatency(us), 0.0
+[READ], MinLatency(us), 0
+[READ], MaxLatency(us), 0
+[READ], 50thPercentileLatency(us), 0
+[READ], 95thPercentileLatency(us), 0
+[READ], 99thPercentileLatency(us), 0
+[READ], Return=NOT_FOUND, 1000
+[CLEANUP], Operations, 16
+[CLEANUP], AverageLatency(us), 28.75
+[CLEANUP], MinLatency(us), 15
+[CLEANUP], MaxLatency(us), 131
+[CLEANUP], 50thPercentileLatency(us), 19
+[CLEANUP], 95thPercentileLatency(us), 131
+[CLEANUP], 99thPercentileLatency(us), 131
+[READ-FAILED], Operations, 1000
+[READ-FAILED], AverageLatency(us), 60.041
+[READ-FAILED], MinLatency(us), 7
+[READ-FAILED], MaxLatency(us), 3333
+[READ-FAILED], 50thPercentileLatency(us), 26
+[READ-FAILED], 95thPercentileLatency(us), 72
+[READ-FAILED], 99thPercentileLatency(us), 965

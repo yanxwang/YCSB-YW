@@ -35,6 +35,7 @@ public class SharedKVClient extends DB {
 
   private long nativeHandle;
   private static volatile boolean contextInitialized = false;
+  private static volatile long sharedContextHandle = 0;  // Remember the shared context
   private static final Object INIT_LOCK = new Object();
 
   static {
@@ -88,16 +89,13 @@ public class SharedKVClient extends DB {
             System.err.println("DEBUG: Initializing SharedKV in multi-threaded mode");
             System.err.println("DEBUG: NUMA node=" + numaNode + ", clients=" + numClients + ", workers=" + numWorkers);
 
-            nativeHandle = nativeInitThreaded(numaNode, numClients, numWorkers);
+            sharedContextHandle = nativeInitThreaded(numaNode, numClients, numWorkers);
+            nativeHandle = sharedContextHandle;
             contextInitialized = true;
           } else {
             // Subsequent threads reuse the existing context
-            int numaNode = Integer.parseInt(getProperties().getProperty("sharedkv.numa_node", "2"));
-            int numClients = Integer.parseInt(getProperties().getProperty("sharedkv.num_clients", "16"));
-            int numWorkers = Integer.parseInt(getProperties().getProperty("sharedkv.num_workers", "8"));
-
-            System.err.println("DEBUG: Reusing existing SharedKV context");
-            nativeHandle = nativeInitThreaded(numaNode, numClients, numWorkers);
+            System.err.println("DEBUG: Reusing existing SharedKV context (handle=" + sharedContextHandle + ")");
+            nativeHandle = sharedContextHandle;
           }
         }
       } else {
@@ -134,14 +132,19 @@ public class SharedKVClient extends DB {
 
   @Override
   public void cleanup() throws DBException {
-    if (nativeHandle != 0) {
-      String threading = getProperties().getProperty("sharedkv.threading", "single");
-      if ("multi".equalsIgnoreCase(threading)) {
-        nativeDestroyThreaded(nativeHandle);
-      } else {
-        nativeDestroy(nativeHandle);
-      }
+    // In multi-threaded mode, we don't destroy the shared context
+    // It persists across load/run phases and is only destroyed at JVM shutdown
+    String threading = getProperties().getProperty("sharedkv.threading", "single");
+    if ("multi".equalsIgnoreCase(threading)) {
+      // Just clear the per-thread handle, but keep the shared context alive
       nativeHandle = 0;
+      System.err.println("DEBUG: Cleanup called (multi-threaded mode, context preserved)");
+    } else {
+      // Single-threaded mode: destroy the per-thread instance
+      if (nativeHandle != 0) {
+        nativeDestroy(nativeHandle);
+        nativeHandle = 0;
+      }
     }
   }
 
