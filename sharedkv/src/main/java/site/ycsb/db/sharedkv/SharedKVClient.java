@@ -34,11 +34,14 @@ import java.util.Vector;
 public class SharedKVClient extends DB {
 
   private long nativeHandle;
+  private static volatile boolean contextInitialized = false;
+  private static final Object INIT_LOCK = new Object();
 
   static {
     System.loadLibrary("sharedkv_jni");
   }
 
+  // Single-threaded mode native methods (legacy)
   private native long nativeInit(String devicePath);
 
   private native long nativeInitCXL(int numaNode);
@@ -53,23 +56,64 @@ public class SharedKVClient extends DB {
 
   private native int nativeDelete(long handle, String key);
 
+  // Multi-threaded mode native methods (UINTR-based)
+  private native long nativeInitThreaded(int numaNode, int numClients, int numWorkers);
+
+  private native void nativeDestroyThreaded(long handle);
+
+  private native int nativeReadThreaded(long handle, String key, Map<String, String> result);
+
+  private native int nativeInsertThreaded(long handle, String key, Map<String, String> values);
+
+  private native int nativeUpdateThreaded(long handle, String key, Map<String, String> values);
+
+  private native int nativeDeleteThreaded(long handle, String key);
+
   @Override
   public void init() throws DBException {
     try {
-      // Default to CXL mode on NUMA node 2
+      // Check threading mode
+      String threading = getProperties().getProperty("sharedkv.threading", "single");
       String mode = getProperties().getProperty("sharedkv.mode", "cxl");
 
-      if ("pmem".equalsIgnoreCase(mode)) {
-        // Legacy PMem mode (for backward compatibility)
-        String devicePath = getProperties().getProperty("sharedkv.device", "/dev/pmem0");
-        System.err.println("DEBUG: Initializing SharedKV in PMem mode with device: " + devicePath);
-        nativeHandle = nativeInit(devicePath);
+      if ("multi".equalsIgnoreCase(threading)) {
+        // Multi-threaded UINTR-based mode
+        synchronized (INIT_LOCK) {
+          if (!contextInitialized) {
+            // First thread initializes the shared context
+            int numaNode = Integer.parseInt(getProperties().getProperty("sharedkv.numa_node", "2"));
+            int numClients = Integer.parseInt(getProperties().getProperty("sharedkv.num_clients", "16"));
+            int numWorkers = Integer.parseInt(getProperties().getProperty("sharedkv.num_workers", "8"));
+
+            System.err.println("DEBUG: Initializing SharedKV in multi-threaded mode");
+            System.err.println("DEBUG: NUMA node=" + numaNode + ", clients=" + numClients + ", workers=" + numWorkers);
+
+            nativeHandle = nativeInitThreaded(numaNode, numClients, numWorkers);
+            contextInitialized = true;
+          } else {
+            // Subsequent threads reuse the existing context
+            int numaNode = Integer.parseInt(getProperties().getProperty("sharedkv.numa_node", "2"));
+            int numClients = Integer.parseInt(getProperties().getProperty("sharedkv.num_clients", "16"));
+            int numWorkers = Integer.parseInt(getProperties().getProperty("sharedkv.num_workers", "8"));
+
+            System.err.println("DEBUG: Reusing existing SharedKV context");
+            nativeHandle = nativeInitThreaded(numaNode, numClients, numWorkers);
+          }
+        }
       } else {
-        // Default CXL mode: use NUMA node allocation
-        String numaNodeStr = getProperties().getProperty("sharedkv.numa_node", "2");
-        int numaNode = Integer.parseInt(numaNodeStr);
-        System.err.println("DEBUG: Initializing SharedKV in CXL mode on NUMA node: " + numaNode);
-        nativeHandle = nativeInitCXL(numaNode);
+        // Single-threaded mode (legacy)
+        if ("pmem".equalsIgnoreCase(mode)) {
+          // Legacy PMem mode (for backward compatibility)
+          String devicePath = getProperties().getProperty("sharedkv.device", "/dev/pmem0");
+          System.err.println("DEBUG: Initializing SharedKV in PMem mode with device: " + devicePath);
+          nativeHandle = nativeInit(devicePath);
+        } else {
+          // Default CXL mode: use NUMA node allocation
+          String numaNodeStr = getProperties().getProperty("sharedkv.numa_node", "2");
+          int numaNode = Integer.parseInt(numaNodeStr);
+          System.err.println("DEBUG: Initializing SharedKV in single-threaded CXL mode on NUMA node: " + numaNode);
+          nativeHandle = nativeInitCXL(numaNode);
+        }
       }
 
       System.err.println("DEBUG: Native handle: " + nativeHandle);
@@ -91,7 +135,12 @@ public class SharedKVClient extends DB {
   @Override
   public void cleanup() throws DBException {
     if (nativeHandle != 0) {
-      nativeDestroy(nativeHandle);
+      String threading = getProperties().getProperty("sharedkv.threading", "single");
+      if ("multi".equalsIgnoreCase(threading)) {
+        nativeDestroyThreaded(nativeHandle);
+      } else {
+        nativeDestroy(nativeHandle);
+      }
       nativeHandle = 0;
     }
   }
@@ -100,7 +149,14 @@ public class SharedKVClient extends DB {
   public Status read(String table, String key, Set<String> fields,
                      Map<String, ByteIterator> result) {
     Map<String, String> stringResult = new HashMap<>();
-    int ret = nativeRead(nativeHandle, key, stringResult);
+
+    String threading = getProperties().getProperty("sharedkv.threading", "single");
+    int ret;
+    if ("multi".equalsIgnoreCase(threading)) {
+      ret = nativeReadThreaded(nativeHandle, key, stringResult);
+    } else {
+      ret = nativeRead(nativeHandle, key, stringResult);
+    }
 
     if (ret == 0) {
       for (Map.Entry<String, String> entry : stringResult.entrySet()) {
@@ -120,7 +176,15 @@ public class SharedKVClient extends DB {
         stringValues.put(entry.getKey(), entry.getValue().toString());
       }
       System.err.println("DEBUG: Calling nativeInsert with " + stringValues.size() + " values");
-      int ret = nativeInsert(nativeHandle, key, stringValues);
+
+      String threading = getProperties().getProperty("sharedkv.threading", "single");
+      int ret;
+      if ("multi".equalsIgnoreCase(threading)) {
+        ret = nativeInsertThreaded(nativeHandle, key, stringValues);
+      } else {
+        ret = nativeInsert(nativeHandle, key, stringValues);
+      }
+
       System.err.println("DEBUG: nativeInsert returned: " + ret);
       return ret == 0 ? Status.OK : Status.ERROR;
     } catch (Exception e) {
@@ -137,13 +201,26 @@ public class SharedKVClient extends DB {
       stringValues.put(entry.getKey(), entry.getValue().toString());
     }
 
-    int ret = nativeUpdate(nativeHandle, key, stringValues);
+    String threading = getProperties().getProperty("sharedkv.threading", "single");
+    int ret;
+    if ("multi".equalsIgnoreCase(threading)) {
+      ret = nativeUpdateThreaded(nativeHandle, key, stringValues);
+    } else {
+      ret = nativeUpdate(nativeHandle, key, stringValues);
+    }
+
     return ret == 0 ? Status.OK : Status.ERROR;
   }
 
   @Override
   public Status delete(String table, String key) {
-    int ret = nativeDelete(nativeHandle, key);
+    String threading = getProperties().getProperty("sharedkv.threading", "single");
+    int ret;
+    if ("multi".equalsIgnoreCase(threading)) {
+      ret = nativeDeleteThreaded(nativeHandle, key);
+    } else {
+      ret = nativeDelete(nativeHandle, key);
+    }
     return ret == 0 ? Status.OK : Status.ERROR;
   }
 

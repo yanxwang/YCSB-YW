@@ -1,0 +1,21 @@
+# SharedKV Multi-threaded Test Workload
+# Small test to verify the multi-threaded implementation works
+
+recordcount=1000
+operationcount=5000
+workload=site.ycsb.workloads.CoreWorkload
+
+readallfields=true
+
+# Mix of operations
+readproportion=0.5
+updateproportion=0.3
+insertproportion=0.2
+scanproportion=0
+deleteproportion=0
+
+requestdistribution=zipfian
+
+# Field configuration
+fieldcount=10
+fieldlength=100

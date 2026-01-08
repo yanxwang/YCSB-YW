@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
-project(SharedKV VERSION 1.0.0 LANGUAGES CXX)
+project(SharedKV VERSION 2.0.0 LANGUAGES CXX)
 
 # Set C++ standard
 set(CMAKE_CXX_STANDARD 17)
@@ -7,8 +7,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Compiler flags
-set(CMAKE_CXX_FLAGS_RELEASE "-O3")
-set(CMAKE_CXX_FLAGS_DEBUG "-g -O0")
+set(CMAKE_CXX_FLAGS_RELEASE "-O3 -march=native")
+set(CMAKE_CXX_FLAGS_DEBUG "-g -O0 -DDEBUG_BUCKET_OWNERSHIP")
 
 # Find Java and JNI
 find_package(JNI REQUIRED)
@@ -20,6 +20,12 @@ include_directories(${CMAKE_SOURCE_DIR}/include)
 # Source files
 set(CORE_SOURCES
     src/shared_kv_bucket.cpp
+    src/uintr_threading.cpp
+    src/kv_request.cpp
+    src/kv_worker.cpp
+    src/kv_synchronizer.cpp
+    src/kv_poller.cpp
+    src/kv_context.cpp
 )
 
 set(YCSB_SOURCES
