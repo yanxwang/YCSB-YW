@@ -78,7 +78,7 @@ template<typename T> struct LockFreeQueue;
 
 // Worker with direct ring buffer handoff
 struct KVWorker {
-    static constexpr size_t BUFFER_SIZE = 16;
+    static constexpr size_t BUFFER_SIZE = 2048;
 
     alignas(64) KVRequest* buffer[BUFFER_SIZE];  // Pointer array for requests
     alignas(64) std::atomic<uint64_t> write_idx{0};

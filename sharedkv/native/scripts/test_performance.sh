@@ -10,7 +10,7 @@ echo "=========================================="
 
 # Test configuration
 NUMA_NODE=3
-THREADS=16
+THREADS=32
 NUM_CLIENTS=32
 NUM_WORKERS=16
 RECORDCOUNT=1000000
