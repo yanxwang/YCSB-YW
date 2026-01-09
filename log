@@ -1,3 +1,87 @@
+wang@g1:~/YCSB-YW$ ./sharedkv/native/scripts/test_performance.sh 
+==========================================
+SharedKV Performance Test
+==========================================
+Configuration:
+  Threads: 32
+  Clients: 32
+  Workers: 32
+  Queue Depth: 2048
+  Ring Buffer Size: 2048
+  RecordCount: 1000000
+  OperationCount: 1000000
+
+==========================================
+LOAD PHASE (Workload C)
+==========================================
+[INSERT], AverageLatency(us), 2305.974636
+[INSERT], 95thPercentileLatency(us), 6847
+[INSERT], 99thPercentileLatency(us), 7747
+[INSERT], Return=OK, 1000000
+
+==========================================
+RUN PHASE (Workload C - 100% Read)
+==========================================
+[OVERALL], Throughput(ops/sec), 795544.9482895783
+[READ], AverageLatency(us), 34.141725
+[READ], 95thPercentileLatency(us), 84
+[READ], 99thPercentileLatency(us), 147
+[READ], Return=OK, 1000000
+
+==========================================
+Test Complete
+==========================================
+
+
+#baseline
+wang@g1:~/YCSB-YW$ ./sharedkv/native/scripts/test_performance.sh 
+==========================================
+SharedKV Performance Test
+==========================================
+Configuration:
+  Threads: 32
+  Clients: 32
+  Workers: 32
+  Queue Depth: 2048
+  Ring Buffer Size: 2048
+  RecordCount: 1000000
+  OperationCount: 1000000
+
+==========================================
+LOAD PHASE (Workload C)
+==========================================
+[INSERT], AverageLatency(us), 3185.251503
+[INSERT], 95thPercentileLatency(us), 10079
+[INSERT], 99thPercentileLatency(us), 12767
+[INSERT], Return=OK, 1000000
+
+==========================================
+RUN PHASE (Workload C - 100% Read)
+==========================================
+[OVERALL], Throughput(ops/sec), 480307.3967339097
+[READ], AverageLatency(us), 58.066913
+[READ], 95thPercentileLatency(us), 97
+[READ], 99thPercentileLatency(us), 153
+[READ], Return=OK, 1000000
+
+==========================================
+Test Complete
+==========================================
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 wang@g1:~/YCSB-YW$ java -Djava.library.path=/usr/lib   -cp "sharedkv/target/sharedkv-binding-0.18.0-SNAPSHOT.jar:core/target/core-0.18.0-SNAPSHOT.jar:$(find core/target/dependency -name '*.jar' | tr '\n' ':')"   site.ycsb.Client   -db site.ycsb.db.sharedkv.SharedKVClient   -P workloads/workloada   -p sharedkv.mode=cxl   -p sharedkv.threading=multi   -p sharedkv
 .numa_node=3   -p sharedkv.num_clients=16   -p sharedkv.num_workers=16   -threads 16   -load   -p recordcount=1000000   2
 >/dev/null | tee results_workloada_load.txt

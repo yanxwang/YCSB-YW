@@ -8,6 +8,7 @@
 #include "shared_kv.h"
 #include "ycsb_wrapper.h"
 #include "kv_request.h"
+#include "uintr_threading.h"
 
 // ============================================================================
 // Helper functions (shared by both modes)
@@ -73,6 +74,19 @@ void put_to_jmap(JNIEnv* env, jobject jmap, const std::string& key, const std::s
 }
 
 // ============================================================================
+// Global CPU allocation tracking (shared with kv_context.cpp)
+// ============================================================================
+// CPU 0: Synchronizer (fixed)
+// CPU 1: Poller (fixed)
+// CPU 2+: Dynamically allocated to Java threads and Worker threads
+std::atomic<int> next_available_cpu{2};  // Start from CPU 2 (accessible via extern)
+
+// Helper function to allocate next available CPU
+int allocate_cpu() {
+    return next_available_cpu.fetch_add(1, std::memory_order_relaxed);
+}
+
+// ============================================================================
 // Multi-threaded mode: Thread-local client ID management
 // ============================================================================
 
@@ -111,11 +125,14 @@ uint32_t get_client_id(SharedKVContext* ctx) {
                 client_id);
     }
 
+    // Dynamically allocate CPU for this Java thread (from global pool starting at CPU 2)
+    int target_cpu = allocate_cpu();
+    pin_current_thread_to_cpu(target_cpu);
+    fprintf(stderr, "[JNI] Thread %lu assigned client_id=%u, pinned to CPU %d\n",
+            std::hash<std::thread::id>{}(tid), client_id, target_cpu);
+
     thread_to_client_map[tid] = client_id;
     tls_client_id = client_id;
-
-    fprintf(stderr, "[JNI] Thread %lu assigned client_id=%u\n",
-            std::hash<std::thread::id>{}(tid), client_id);
 
     return client_id;
 }
@@ -262,6 +279,15 @@ Java_site_ycsb_db_sharedkv_SharedKVClient_nativeReadThreaded(
     req->set_key(k);
     req->timestamp = std::chrono::steady_clock::now().time_since_epoch().count();
 
+    // Pre-fill routing fields (optimization: offload from synchronizer)
+    req->client_id = client_id;
+    req->resp_q_ptr = ctx->clients[client_id]->resp_q;
+
+    // Pre-compute target worker ID based on key hash
+    uint64_t h = std::hash<std::string>{}(k);
+    uint32_t bucket_id = h % NUM_BUCKETS;
+    req->target_worker_id = bucket_id % ctx->num_workers;
+
     // Submit request (blocking with 5000ms timeout)
     KVResponse resp = ctx->submit_request(client_id, req, 5000);
 
@@ -310,6 +336,15 @@ Java_site_ycsb_db_sharedkv_SharedKVClient_nativeInsertThreaded(
     req->set_value(serialized_value);
     req->timestamp = std::chrono::steady_clock::now().time_since_epoch().count();
 
+    // Pre-fill routing fields (optimization: offload from synchronizer)
+    req->client_id = client_id;
+    req->resp_q_ptr = ctx->clients[client_id]->resp_q;
+
+    // Pre-compute target worker ID based on key hash
+    uint64_t h = std::hash<std::string>{}(k);
+    uint32_t bucket_id = h % NUM_BUCKETS;
+    req->target_worker_id = bucket_id % ctx->num_workers;
+
     // Submit request (blocking with 5000ms timeout)
     KVResponse resp = ctx->submit_request(client_id, req, 5000);
 
@@ -349,6 +384,15 @@ Java_site_ycsb_db_sharedkv_SharedKVClient_nativeUpdateThreaded(
     req->set_value(serialized_value);
     req->timestamp = std::chrono::steady_clock::now().time_since_epoch().count();
 
+    // Pre-fill routing fields (optimization: offload from synchronizer)
+    req->client_id = client_id;
+    req->resp_q_ptr = ctx->clients[client_id]->resp_q;
+
+    // Pre-compute target worker ID based on key hash
+    uint64_t h = std::hash<std::string>{}(k);
+    uint32_t bucket_id = h % NUM_BUCKETS;
+    req->target_worker_id = bucket_id % ctx->num_workers;
+
     // Submit request (blocking with 5000ms timeout)
     KVResponse resp = ctx->submit_request(client_id, req, 5000);
 
@@ -378,6 +422,15 @@ Java_site_ycsb_db_sharedkv_SharedKVClient_nativeDeleteThreaded(
     req->op_type = KVOpType::DELETE;
     req->set_key(k);
     req->timestamp = std::chrono::steady_clock::now().time_since_epoch().count();
+
+    // Pre-fill routing fields (optimization: offload from synchronizer)
+    req->client_id = client_id;
+    req->resp_q_ptr = ctx->clients[client_id]->resp_q;
+
+    // Pre-compute target worker ID based on key hash
+    uint64_t h = std::hash<std::string>{}(k);
+    uint32_t bucket_id = h % NUM_BUCKETS;
+    req->target_worker_id = bucket_id % ctx->num_workers;
 
     // Submit request (blocking with 5000ms timeout)
     KVResponse resp = ctx->submit_request(client_id, req, 5000);

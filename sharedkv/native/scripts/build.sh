@@ -21,7 +21,7 @@ mkdir -p build
 
 # Compile
 echo "Compiling SharedKV JNI library..."
-g++ -std=c++17 -O3 -fPIC -shared -muintr \
+g++ -std=c++17 -O3 -fPIC -shared -muintr -g \
     -I"include" \
     -I"$JAVA_HOME/include" \
     -I"$JAVA_HOME/include/linux" \

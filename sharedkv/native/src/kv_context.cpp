@@ -5,6 +5,18 @@
 #include <chrono>
 #include <cstdio>
 #include <sys/mman.h>
+#include <atomic>
+
+// Global CPU allocation tracking (shared with JNI layer)
+// CPU 0: Synchronizer (fixed)
+// CPU 1: Poller (fixed)
+// CPU 2+: Dynamically allocated to Java threads and Worker threads
+extern std::atomic<int> next_available_cpu;
+
+// Helper function to allocate next available CPU
+static int allocate_cpu() {
+    return next_available_cpu.fetch_add(1, std::memory_order_relaxed);
+}
 
 // Forward declarations of thread functions
 extern void worker_thread_func(KVWorker* worker, SharedHashTable* table,
@@ -119,30 +131,32 @@ void SharedKVContext::start_threads() {
 
     fprintf(stderr, "[SharedKVContext] Starting threads...\n");
 
-    // Start worker threads
+    // Start worker threads with dynamic CPU allocation
     for (uint32_t i = 0; i < num_workers; ++i) {
         worker_threads.emplace_back(worker_thread_func, workers[i], table, base,
                                      std::ref(stop_flag));
-        // Pin to CPUs (simple strategy: workers start at CPU 2)
-        pin_thread_to_cpu(worker_threads.back(), 2 + i);
+        // Dynamically allocate CPU for worker (from global pool starting at CPU 2)
+        int worker_cpu = allocate_cpu();
+        pin_thread_to_cpu(worker_threads.back(), worker_cpu);
+        fprintf(stderr, "[SharedKVContext] Worker %u pinned to CPU %d\n", i, worker_cpu);
     }
     fprintf(stderr, "[SharedKVContext] Started %u worker threads\n", num_workers);
 
-    // Start synchronizer thread
+    // Start synchronizer thread (fixed CPU 0)
     synchronizer_thread = std::thread(synchronizer_thread_func,
                                      std::ref(clients),
                                      std::ref(workers),
                                      std::ref(global_sequence),
                                      std::ref(stop_flag));
-    pin_thread_to_cpu(synchronizer_thread, 0);  // Pin to CPU 0
-    fprintf(stderr, "[SharedKVContext] Started synchronizer thread\n");
+    pin_thread_to_cpu(synchronizer_thread, 0);
+    fprintf(stderr, "[SharedKVContext] Synchronizer thread pinned to CPU 0 (fixed)\n");
 
-    // Start poller thread
+    // Start poller thread (fixed CPU 1)
     poller_thread = std::thread(poller_thread_func,
                                std::ref(clients),
                                std::ref(stop_flag));
-    pin_thread_to_cpu(poller_thread, 1);  // Pin to CPU 1
-    fprintf(stderr, "[SharedKVContext] Started poller thread\n");
+    pin_thread_to_cpu(poller_thread, 1);
+    fprintf(stderr, "[SharedKVContext] Poller thread pinned to CPU 1 (fixed)\n");
 
     fprintf(stderr, "[SharedKVContext] All threads started successfully\n");
 }

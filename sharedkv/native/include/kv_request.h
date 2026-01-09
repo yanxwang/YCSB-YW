@@ -25,9 +25,9 @@ enum class KVStatus : uint8_t {
 // KV Request structure (cache-line aligned for performance)
 struct alignas(64) KVRequest {
     KVOpType op_type;
-    uint32_t client_id;
-    uint64_t sequence_number;  // Global sequence number assigned by synchronizer
-    uint64_t timestamp;        // For latency tracking (optional, 0 = disabled)
+    uint32_t client_id;              // Set by Java thread (JNI)
+    uint64_t sequence_number;        // Set by synchronizer
+    uint64_t timestamp;              // Set by Java thread (JNI)
 
     // Key storage (inline for cache efficiency)
     uint32_t key_len;
@@ -37,8 +37,12 @@ struct alignas(64) KVRequest {
     uint32_t value_len;
     char* value_data;  // Heap-allocated if needed
 
-    // Response queue pointer (set by synchronizer)
+    // Response queue pointer (set by Java thread in JNI)
     LockFreeQueue<KVResponse>* resp_q_ptr;
+
+    // Pre-computed routing information (set by Java thread in JNI)
+    uint32_t target_worker_id;       // Pre-computed worker ID based on key hash
+    uint32_t padding;                // Padding to maintain 64-byte alignment
 
     // Helper methods
     void set_key(const std::string& key);

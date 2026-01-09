@@ -10,13 +10,13 @@ echo "=========================================="
 
 # Test configuration
 NUMA_NODE=3
-THREADS=32
-NUM_CLIENTS=32
-NUM_WORKERS=32
+THREADS=4
+NUM_CLIENTS=4
+NUM_WORKERS=4
 QUEUE_DEPTH=2048
 RING_BUFFER_SIZE=2048
-RECORDCOUNT=1000000
-OPCOUNT=1000000
+RECORDCOUNT=10000
+OPCOUNT=10000
 
 echo "Configuration:"
 echo "  Threads: $THREADS"
@@ -28,63 +28,20 @@ echo "  RecordCount: $RECORDCOUNT"
 echo "  OperationCount: $OPCOUNT"
 echo ""
 
-# # Load phase
-# echo "=========================================="
-# echo "LOAD PHASE (Workload A)"
-# echo "=========================================="
-# java -Djava.library.path=/usr/lib \
-#   -cp "$CLASSPATH" \
-#   site.ycsb.Client \
-#   -db site.ycsb.db.sharedkv.SharedKVClient \
-#   -P workloads/workloada \
-#   -p sharedkv.mode=cxl \
-#   -p sharedkv.threading=multi \
-#   -p sharedkv.numa_node=$NUMA_NODE \
-#   -p sharedkv.num_clients=$NUM_CLIENTS \
-#   -p sharedkv.num_workers=$NUM_WORKERS \
-#   -p sharedkv.queue_depth=$QUEUE_DEPTH \
-#   -p sharedkv.ring_buffer_size=$RING_BUFFER_SIZE \
-#   -threads $THREADS \
-#   -load \
-#   -p recordcount=$RECORDCOUNT \
-#   2>&1 | grep -E "Throughput|AverageLatency|95thPercentileLatency|99thPercentileLatency|Return=" | grep INSERT
-
-# echo ""
-# echo "=========================================="
-# echo "RUN PHASE (Workload A - 100% Read + 50% Update)"
-# echo "=========================================="
-# java -Djava.library.path=/usr/lib \
-#   -cp "$CLASSPATH" \
-#   site.ycsb.Client \
-#   -db site.ycsb.db.sharedkv.SharedKVClient \
-#   -P workloads/workloada \
-#   -p sharedkv.mode=cxl \
-#   -p sharedkv.threading=multi \
-#   -p sharedkv.numa_node=$NUMA_NODE \
-#   -p sharedkv.num_clients=$NUM_CLIENTS \
-#   -p sharedkv.num_workers=$NUM_WORKERS \
-#   -p sharedkv.queue_depth=$QUEUE_DEPTH \
-#   -p sharedkv.ring_buffer_size=$RING_BUFFER_SIZE \
-#   -threads $THREADS \
-#   -t \
-#   -p recordcount=$RECORDCOUNT \
-#   -p operationcount=$OPCOUNT \
-#   2>&1 | grep -E "Throughput|AverageLatency|95thPercentileLatency|99thPercentileLatency|Return=" | grep -E "READ|UPDATE|OVERALL"
-
 # Load phase
 echo "=========================================="
-echo "LOAD PHASE (Workload C)"
+echo "LOAD PHASE (Workload A)"
 echo "=========================================="
 java -Djava.library.path=/usr/lib \
   -cp "$CLASSPATH" \
   site.ycsb.Client \
   -db site.ycsb.db.sharedkv.SharedKVClient \
-  -P workloads/workloadc \
+  -P workloads/workloada \
   -p sharedkv.mode=cxl \
   -p sharedkv.threading=multi \
   -p sharedkv.numa_node=$NUMA_NODE \
-  -p sharedkv.num_clients=$THREADS \
-  -p sharedkv.num_workers=$THREADS \
+  -p sharedkv.num_clients=$NUM_CLIENTS \
+  -p sharedkv.num_workers=$NUM_WORKERS \
   -p sharedkv.queue_depth=$QUEUE_DEPTH \
   -p sharedkv.ring_buffer_size=$RING_BUFFER_SIZE \
   -threads $THREADS \
@@ -94,27 +51,70 @@ java -Djava.library.path=/usr/lib \
 
 echo ""
 echo "=========================================="
-echo "RUN PHASE (Workload C - 100% Read)"
+echo "RUN PHASE (Workload A - 100% Read + 50% Update)"
 echo "=========================================="
 java -Djava.library.path=/usr/lib \
   -cp "$CLASSPATH" \
   site.ycsb.Client \
   -db site.ycsb.db.sharedkv.SharedKVClient \
-  -P workloads/workloadc \
+  -P workloads/workloada \
   -p sharedkv.mode=cxl \
   -p sharedkv.threading=multi \
   -p sharedkv.numa_node=$NUMA_NODE \
-  -p sharedkv.num_clients=$THREADS \
-  -p sharedkv.num_workers=$THREADS \
+  -p sharedkv.num_clients=$NUM_CLIENTS \
+  -p sharedkv.num_workers=$NUM_WORKERS \
   -p sharedkv.queue_depth=$QUEUE_DEPTH \
   -p sharedkv.ring_buffer_size=$RING_BUFFER_SIZE \
   -threads $THREADS \
   -t \
   -p recordcount=$RECORDCOUNT \
   -p operationcount=$OPCOUNT \
-  2>&1 | grep -E "Throughput|AverageLatency|95thPercentileLatency|99thPercentileLatency|Return=" | grep -E "READ|OVERALL"
+  2>&1 | grep -E "Throughput|AverageLatency|95thPercentileLatency|99thPercentileLatency|Return=" | grep -E "READ|UPDATE|OVERALL"
 
-echo ""
-echo "=========================================="
-echo "Test Complete"
-echo "=========================================="
+# # Load phase
+# echo "=========================================="
+# echo "LOAD PHASE (Workload C)"
+# echo "=========================================="
+# java -Djava.library.path=/usr/lib \
+#   -cp "$CLASSPATH" \
+#   site.ycsb.Client \
+#   -db site.ycsb.db.sharedkv.SharedKVClient \
+#   -P workloads/workloadc \
+#   -p sharedkv.mode=cxl \
+#   -p sharedkv.threading=multi \
+#   -p sharedkv.numa_node=$NUMA_NODE \
+#   -p sharedkv.num_clients=$THREADS \
+#   -p sharedkv.num_workers=$THREADS \
+#   -p sharedkv.queue_depth=$QUEUE_DEPTH \
+#   -p sharedkv.ring_buffer_size=$RING_BUFFER_SIZE \
+#   -threads $THREADS \
+#   -load \
+#   -p recordcount=$RECORDCOUNT \
+#   2>&1 | grep -E "Throughput|AverageLatency|95thPercentileLatency|99thPercentileLatency|Return=" | grep INSERT
+
+# echo ""
+# echo "=========================================="
+# echo "RUN PHASE (Workload C - 100% Read)"
+# echo "=========================================="
+# java -Djava.library.path=/usr/lib \
+#   -cp "$CLASSPATH" \
+#   site.ycsb.Client \
+#   -db site.ycsb.db.sharedkv.SharedKVClient \
+#   -P workloads/workloadc \
+#   -p sharedkv.mode=cxl \
+#   -p sharedkv.threading=multi \
+#   -p sharedkv.numa_node=$NUMA_NODE \
+#   -p sharedkv.num_clients=$THREADS \
+#   -p sharedkv.num_workers=$THREADS \
+#   -p sharedkv.queue_depth=$QUEUE_DEPTH \
+#   -p sharedkv.ring_buffer_size=$RING_BUFFER_SIZE \
+#   -threads $THREADS \
+#   -t \
+#   -p recordcount=$RECORDCOUNT \
+#   -p operationcount=$OPCOUNT \
+#   2>&1 | grep -E "Throughput|AverageLatency|95thPercentileLatency|99thPercentileLatency|Return=" | grep -E "READ|OVERALL"
+
+# echo ""
+# echo "=========================================="
+# echo "Test Complete"
+# echo "=========================================="
