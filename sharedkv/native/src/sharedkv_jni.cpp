@@ -212,16 +212,20 @@ Java_site_ycsb_db_sharedkv_SharedKVClient_nativeDelete(JNIEnv* env, jobject obj,
 
 JNIEXPORT jlong JNICALL
 Java_site_ycsb_db_sharedkv_SharedKVClient_nativeInitThreaded(
-    JNIEnv* env, jobject obj, jint numaNode, jint numClients, jint numWorkers) {
+    JNIEnv* env, jobject obj, jint numaNode, jint numClients, jint numWorkers,
+    jint queueDepth, jint ringBufferSize) {
 
-    fprintf(stderr, "[JNI] nativeInitThreaded: numa_node=%d, num_clients=%d, num_workers=%d\\n",
-            numaNode, numClients, numWorkers);
+    fprintf(stderr, "[JNI] nativeInitThreaded: numa_node=%d, num_clients=%d, num_workers=%d, "
+            "queue_depth=%d, ring_buffer=%d\\n",
+            numaNode, numClients, numWorkers, queueDepth, ringBufferSize);
 
     try {
         SharedKVContext* ctx = get_or_create_context(
             static_cast<uint32_t>(numClients),
             static_cast<uint32_t>(numWorkers),
-            static_cast<int>(numaNode)
+            static_cast<int>(numaNode),
+            static_cast<size_t>(queueDepth),
+            static_cast<size_t>(ringBufferSize)
         );
 
         fprintf(stderr, "[JNI] SharedKVContext created at %p\\n", ctx);

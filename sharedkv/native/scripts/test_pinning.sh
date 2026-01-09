@@ -11,7 +11,7 @@ echo "=========================================="
 # Small workload to verify pinning
 NUMA_NODE=3
 THREADS=4
-NUM_CLIENTS=8
+NUM_CLIENTS=4
 NUM_WORKERS=4
 RECORDCOUNT=10000
 

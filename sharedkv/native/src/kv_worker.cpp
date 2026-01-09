@@ -3,6 +3,27 @@
 #include "uintr_threading.h"
 #include <cstdio>
 #include <thread>
+#include <cstdlib>
+
+// ============================================================================
+// KVWorker Constructor/Destructor
+// ============================================================================
+
+KVWorker::KVWorker(size_t ring_buffer_size) : buffer_size(ring_buffer_size) {
+    // Allocate ring buffer with cache line alignment
+    buffer = (KVRequest**)aligned_alloc(64, sizeof(KVRequest*) * buffer_size);
+    if (!buffer) {
+        fprintf(stderr, "[KVWorker] Failed to allocate ring buffer of size %zu\n", buffer_size);
+        throw std::bad_alloc();
+    }
+}
+
+KVWorker::~KVWorker() {
+    if (buffer) {
+        free(buffer);
+        buffer = nullptr;
+    }
+}
 
 // ============================================================================
 // KVWorker ring buffer operations
@@ -13,11 +34,11 @@ bool KVWorker::try_handoff(KVRequest* req) {
     uint64_t r = read_idx.load(std::memory_order_acquire);
 
     // Check if ring buffer is full
-    if ((w + 1) % BUFFER_SIZE == r % BUFFER_SIZE) {
+    if ((w + 1) % buffer_size == r % buffer_size) {
         return false;  // Full, cannot accept request
     }
 
-    buffer[w % BUFFER_SIZE] = req;
+    buffer[w % buffer_size] = req;
     write_idx.store(w + 1, std::memory_order_release);
     return true;
 }
@@ -30,7 +51,7 @@ bool KVWorker::try_get_request(KVRequest*& req) {
         return false;  // Empty, no requests
     }
 
-    req = buffer[r % BUFFER_SIZE];
+    req = buffer[r % buffer_size];
     read_idx.store(r + 1, std::memory_order_release);
     return true;
 }

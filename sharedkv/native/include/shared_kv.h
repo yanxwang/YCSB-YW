@@ -78,9 +78,10 @@ template<typename T> struct LockFreeQueue;
 
 // Worker with direct ring buffer handoff
 struct KVWorker {
-    static constexpr size_t BUFFER_SIZE = 2048;
+    // Dynamic ring buffer size (configurable at runtime)
+    size_t buffer_size;
+    KVRequest** buffer;  // Dynamically allocated pointer array
 
-    alignas(64) KVRequest* buffer[BUFFER_SIZE];  // Pointer array for requests
     alignas(64) std::atomic<uint64_t> write_idx{0};
     alignas(64) std::atomic<uint64_t> read_idx{0};
 
@@ -94,6 +95,10 @@ struct KVWorker {
     std::atomic<uint64_t> inserts{0};
     std::atomic<uint64_t> updates{0};
     std::atomic<uint64_t> deletes{0};
+
+    // Constructor/Destructor
+    KVWorker(size_t ring_buffer_size = 1024);
+    ~KVWorker();
 
     // Ring buffer operations
     bool try_handoff(KVRequest* req);
@@ -150,7 +155,9 @@ struct SharedKVContext {
     std::atomic<uint64_t> global_sequence{0};
 
     // Constructor/Destructor
-    SharedKVContext(uint32_t num_clients, uint32_t num_workers, int numa_node);
+    SharedKVContext(uint32_t num_clients, uint32_t num_workers, int numa_node,
+                    size_t client_queue_depth = 4096,
+                    size_t worker_ring_buffer_size = 1024);
     ~SharedKVContext();
 
     // Thread management
@@ -162,5 +169,7 @@ struct SharedKVContext {
 };
 
 // Thread-safe initialization
-SharedKVContext* get_or_create_context(uint32_t num_clients, uint32_t num_workers, int numa_node);
+SharedKVContext* get_or_create_context(uint32_t num_clients, uint32_t num_workers, int numa_node,
+                                       size_t client_queue_depth = 4096,
+                                       size_t worker_ring_buffer_size = 1024);
 void destroy_context();

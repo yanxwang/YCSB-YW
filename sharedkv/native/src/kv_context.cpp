@@ -35,11 +35,14 @@ ClientChannel::~ClientChannel() {
 // SharedKVContext implementation
 // ============================================================================
 
-SharedKVContext::SharedKVContext(uint32_t num_clients, uint32_t num_workers, int numa_node)
+SharedKVContext::SharedKVContext(uint32_t num_clients, uint32_t num_workers, int numa_node,
+                                 size_t client_queue_depth, size_t worker_ring_buffer_size)
     : num_clients(num_clients), num_workers(num_workers), numa_node(numa_node) {
 
     fprintf(stderr, "[SharedKVContext] Initializing with %u clients, %u workers on NUMA node %d\n",
             num_clients, num_workers, numa_node);
+    fprintf(stderr, "[SharedKVContext] Queue depth: %zu, Worker ring buffer: %zu\n",
+            client_queue_depth, worker_ring_buffer_size);
 
     // Allocate CXL memory via NUMA
     base = allocate_cxl_memory(numa_node, SHM_SIZE);
@@ -63,21 +66,22 @@ SharedKVContext::SharedKVContext(uint32_t num_clients, uint32_t num_workers, int
         fprintf(stderr, "[SharedKVContext] SharedHashTable already initialized (magic found)\n");
     }
 
-    // Create client channels
-    size_t queue_size = 4096;  // Configurable queue size
+    // Create client channels with configurable queue depth
     for (uint32_t i = 0; i < num_clients; ++i) {
-        clients.push_back(new ClientChannel(queue_size));
+        clients.push_back(new ClientChannel(client_queue_depth));
     }
-    fprintf(stderr, "[SharedKVContext] Created %u client channels\n", num_clients);
+    fprintf(stderr, "[SharedKVContext] Created %u client channels (queue_depth=%zu)\n",
+            num_clients, client_queue_depth);
 
-    // Create workers
+    // Create workers with configurable ring buffer size
     for (uint32_t i = 0; i < num_workers; ++i) {
-        KVWorker* w = new KVWorker();
+        KVWorker* w = new KVWorker(worker_ring_buffer_size);
         w->worker_id = i;
         w->num_workers = num_workers;
         workers.push_back(w);
     }
-    fprintf(stderr, "[SharedKVContext] Created %u workers\n", num_workers);
+    fprintf(stderr, "[SharedKVContext] Created %u workers (ring_buffer_size=%zu)\n",
+            num_workers, worker_ring_buffer_size);
 }
 
 SharedKVContext::~SharedKVContext() {
@@ -248,12 +252,14 @@ static SharedKVContext* g_context = nullptr;
 static std::mutex g_context_mutex;
 
 SharedKVContext* get_or_create_context(uint32_t num_clients, uint32_t num_workers,
-                                       int numa_node) {
+                                       int numa_node, size_t client_queue_depth,
+                                       size_t worker_ring_buffer_size) {
     std::lock_guard<std::mutex> lock(g_context_mutex);
 
     if (!g_context) {
         fprintf(stderr, "[get_or_create_context] Creating new context\n");
-        g_context = new SharedKVContext(num_clients, num_workers, numa_node);
+        g_context = new SharedKVContext(num_clients, num_workers, numa_node,
+                                        client_queue_depth, worker_ring_buffer_size);
         g_context->start_threads();
     } else {
         fprintf(stderr, "[get_or_create_context] Returning existing context\n");

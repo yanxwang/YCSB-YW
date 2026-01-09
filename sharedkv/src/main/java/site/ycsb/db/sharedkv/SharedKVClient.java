@@ -58,7 +58,8 @@ public class SharedKVClient extends DB {
   private native int nativeDelete(long handle, String key);
 
   // Multi-threaded mode native methods (UINTR-based)
-  private native long nativeInitThreaded(int numaNode, int numClients, int numWorkers);
+  private native long nativeInitThreaded(int numaNode, int numClients, int numWorkers,
+                                         int queueDepth, int ringBufferSize);
 
   private native void nativeDestroyThreaded(long handle);
 
@@ -85,11 +86,14 @@ public class SharedKVClient extends DB {
             int numaNode = Integer.parseInt(getProperties().getProperty("sharedkv.numa_node", "2"));
             int numClients = Integer.parseInt(getProperties().getProperty("sharedkv.num_clients", "16"));
             int numWorkers = Integer.parseInt(getProperties().getProperty("sharedkv.num_workers", "8"));
+            int queueDepth = Integer.parseInt(getProperties().getProperty("sharedkv.queue_depth", "4096"));
+            int ringBufferSize = Integer.parseInt(getProperties().getProperty("sharedkv.ring_buffer_size", "1024"));
 
             System.err.println("DEBUG: Initializing SharedKV in multi-threaded mode");
             System.err.println("DEBUG: NUMA node=" + numaNode + ", clients=" + numClients + ", workers=" + numWorkers);
+            System.err.println("DEBUG: Queue depth=" + queueDepth + ", Ring buffer size=" + ringBufferSize);
 
-            sharedContextHandle = nativeInitThreaded(numaNode, numClients, numWorkers);
+            sharedContextHandle = nativeInitThreaded(numaNode, numClients, numWorkers, queueDepth, ringBufferSize);
             nativeHandle = sharedContextHandle;
             contextInitialized = true;
           } else {

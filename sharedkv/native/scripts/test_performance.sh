@@ -10,16 +10,20 @@ echo "=========================================="
 
 # Test configuration
 NUMA_NODE=3
-THREADS=32
-NUM_CLIENTS=32
+THREADS=16
+NUM_CLIENTS=16
 NUM_WORKERS=16
-RECORDCOUNT=1000000
-OPCOUNT=1000000
+QUEUE_DEPTH=4096
+RING_BUFFER_SIZE=1024
+RECORDCOUNT=100000
+OPCOUNT=100000
 
 echo "Configuration:"
 echo "  Threads: $THREADS"
 echo "  Clients: $NUM_CLIENTS"
 echo "  Workers: $NUM_WORKERS"
+echo "  Queue Depth: $QUEUE_DEPTH"
+echo "  Ring Buffer Size: $RING_BUFFER_SIZE"
 echo "  RecordCount: $RECORDCOUNT"
 echo "  OperationCount: $OPCOUNT"
 echo ""
@@ -38,6 +42,8 @@ java -Djava.library.path=/usr/lib \
   -p sharedkv.numa_node=$NUMA_NODE \
   -p sharedkv.num_clients=$NUM_CLIENTS \
   -p sharedkv.num_workers=$NUM_WORKERS \
+  -p sharedkv.queue_depth=$QUEUE_DEPTH \
+  -p sharedkv.ring_buffer_size=$RING_BUFFER_SIZE \
   -threads $THREADS \
   -load \
   -p recordcount=$RECORDCOUNT \
@@ -57,8 +63,11 @@ java -Djava.library.path=/usr/lib \
   -p sharedkv.numa_node=$NUMA_NODE \
   -p sharedkv.num_clients=$NUM_CLIENTS \
   -p sharedkv.num_workers=$NUM_WORKERS \
+  -p sharedkv.queue_depth=$QUEUE_DEPTH \
+  -p sharedkv.ring_buffer_size=$RING_BUFFER_SIZE \
   -threads $THREADS \
   -t \
+  -p recordcount=$RECORDCOUNT \
   -p operationcount=$OPCOUNT \
   2>&1 | grep -E "Throughput|AverageLatency|95thPercentileLatency|99thPercentileLatency|Return=" | grep -E "READ|UPDATE|OVERALL"
 
@@ -76,8 +85,11 @@ java -Djava.library.path=/usr/lib \
   -p sharedkv.numa_node=$NUMA_NODE \
   -p sharedkv.num_clients=$NUM_CLIENTS \
   -p sharedkv.num_workers=$NUM_WORKERS \
+  -p sharedkv.queue_depth=$QUEUE_DEPTH \
+  -p sharedkv.ring_buffer_size=$RING_BUFFER_SIZE \
   -threads $THREADS \
   -t \
+  -p recordcount=$RECORDCOUNT \
   -p operationcount=$OPCOUNT \
   2>&1 | grep -E "Throughput|AverageLatency|95thPercentileLatency|99thPercentileLatency|Return=" | grep -E "READ|OVERALL"
 

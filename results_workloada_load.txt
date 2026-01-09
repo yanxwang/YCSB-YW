@@ -1,29 +1,13 @@
-[OVERALL], RunTime(ms), 2401
-[OVERALL], Throughput(ops/sec), 41649.312786339025
-[TOTAL_GCS_G1_Young_Generation], Count, 3
-[TOTAL_GC_TIME_G1_Young_Generation], Time(ms), 59
-[TOTAL_GC_TIME_%_G1_Young_Generation], Time(%), 2.4573094543940024
-[TOTAL_GCS_G1_Concurrent_GC], Count, 0
-[TOTAL_GC_TIME_G1_Concurrent_GC], Time(ms), 0
-[TOTAL_GC_TIME_%_G1_Concurrent_GC], Time(%), 0.0
-[TOTAL_GCS_G1_Old_Generation], Count, 0
-[TOTAL_GC_TIME_G1_Old_Generation], Time(ms), 0
-[TOTAL_GC_TIME_%_G1_Old_Generation], Time(%), 0.0
-[TOTAL_GCs], Count, 3
-[TOTAL_GC_TIME], Time(ms), 59
-[TOTAL_GC_TIME_%], Time(%), 2.4573094543940024
-[CLEANUP], Operations, 2
-[CLEANUP], AverageLatency(us), 65.0
-[CLEANUP], MinLatency(us), 11
-[CLEANUP], MaxLatency(us), 119
-[CLEANUP], 50thPercentileLatency(us), 11
-[CLEANUP], 95thPercentileLatency(us), 119
-[CLEANUP], 99thPercentileLatency(us), 119
-[INSERT], Operations, 100000
-[INSERT], AverageLatency(us), 43.68203
-[INSERT], MinLatency(us), 28
-[INSERT], MaxLatency(us), 33599
-[INSERT], 50thPercentileLatency(us), 39
-[INSERT], 95thPercentileLatency(us), 56
-[INSERT], 99thPercentileLatency(us), 97
-[INSERT], Return=OK, 100000
+Command line: -db site.ycsb.db.sharedkv.SharedKVClient -P workloads/workloada -p sharedkv.mode=cxl -p sharedkv.threading=multi -p sharedkv.numa_node=3 -p sharedkv.num_clients=2 -p sharedkv.num_workers=2 -p sharedkv.queue_depth=4096 -p sharedkv.ring_buffer_size=1024 -threads 2 -load -p recordcount=100000
+YCSB Client 0.18.0-SNAPSHOT
+
+Loading workload...
+Exception in thread "main" java.lang.NoClassDefFoundError: org/apache/htrace/core/Tracer$Builder
+	at site.ycsb.Client.getTracer(Client.java:458)
+	at site.ycsb.Client.main(Client.java:304)
+Caused by: java.lang.ClassNotFoundException: org.apache.htrace.core.Tracer$Builder
+	at java.base/jdk.internal.loader.BuiltinClassLoader.loadClass(BuiltinClassLoader.java:641)
+	at java.base/jdk.internal.loader.ClassLoaders$AppClassLoader.loadClass(ClassLoaders.java:188)
+	at java.base/java.lang.ClassLoader.loadClass(ClassLoader.java:526)
+	... 2 more
+ (might take a few minutes for large data sets)
