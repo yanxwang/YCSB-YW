@@ -44,34 +44,79 @@ void* allocate_cxl_memory(int numa_node, size_t size) {
     unsigned long nodemask = 1UL << numa_node;
     unsigned long maxnode = sizeof(nodemask) * 8;
 
-    // Use mmap + mbind for strict node binding
+    // Create shared memory object that persists across processes
+    char shm_name[64];
+    snprintf(shm_name, sizeof(shm_name), "/sharedkv_cxl_node%d", numa_node);
+
+    // Try to open existing shared memory first
+    int shm_fd = shm_open(shm_name, O_RDWR, 0666);
+    bool is_new = false;
+
+    if (shm_fd < 0) {
+        // Shared memory doesn't exist, create it
+        fprintf(stderr, "CXL: Creating new shared memory segment: %s\n", shm_name);
+        shm_fd = shm_open(shm_name, O_CREAT | O_RDWR, 0666);
+        if (shm_fd < 0) {
+            perror("shm_open failed");
+            exit(1);
+        }
+
+        // Set size for new shared memory
+        if (ftruncate(shm_fd, size) != 0) {
+            perror("ftruncate failed");
+            close(shm_fd);
+            shm_unlink(shm_name);
+            exit(1);
+        }
+        is_new = true;
+    } else {
+        fprintf(stderr, "CXL: Reusing existing shared memory segment: %s\n", shm_name);
+    }
+
+    // Map shared memory to process address space
     void* addr = mmap(nullptr, size, PROT_READ | PROT_WRITE,
-                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+                      MAP_SHARED, shm_fd, 0);
+    close(shm_fd);  // Can close fd after mmap
+
     if (addr == MAP_FAILED) {
         perror("mmap failed");
+        if (is_new) {
+            shm_unlink(shm_name);
+        }
         exit(1);
     }
 
     auto t_mmap = std::chrono::high_resolution_clock::now();
     auto mmap_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t_mmap - t_start).count();
-    fprintf(stderr, "CXL: mmap took %ld ms\n", mmap_ms);
+    fprintf(stderr, "CXL: mmap took %ld ms (is_new=%d)\n", mmap_ms, is_new);
     fflush(stderr);
 
-    // Bind memory policy to specific NUMA node (for future page faults)
-    if (mbind(addr, size, MPOL_BIND, &nodemask, maxnode, MPOL_MF_STRICT) != 0) {
-        perror("mbind failed");
-        fprintf(stderr, "Failed to bind %zu bytes to NUMA node %d\n", size, numa_node);
-        munmap(addr, size);
-        exit(1);
+    // Bind memory policy to specific NUMA node
+    // Only use MPOL_MF_STRICT for NEW memory to avoid clearing existing data
+    if (is_new) {
+        // For new memory, bind strictly to the NUMA node
+        if (mbind(addr, size, MPOL_BIND, &nodemask, maxnode, MPOL_MF_STRICT) != 0) {
+            perror("mbind failed");
+            fprintf(stderr, "Failed to bind %zu bytes to NUMA node %d\n", size, numa_node);
+            munmap(addr, size);
+            shm_unlink(shm_name);
+            exit(1);
+        }
+        fprintf(stderr, "CXL: mbind completed with MPOL_MF_STRICT for new memory\n");
+        fflush(stderr);
+
+        // Touch first page to trigger allocation
+        *(volatile char*)addr = 0;
+    } else {
+        // For existing memory, verify but don't move pages
+        fprintf(stderr, "CXL: Skipping mbind for existing shared memory (preserving data)\n");
+        fflush(stderr);
     }
 
     auto t_mbind = std::chrono::high_resolution_clock::now();
     auto mbind_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t_mbind - t_mmap).count();
-    fprintf(stderr, "CXL: mbind took %ld ms\n", mbind_ms);
+    fprintf(stderr, "CXL: Memory binding took %ld ms\n", mbind_ms);
     fflush(stderr);
-
-    // Touch first page to trigger allocation and verify the memory is on the correct node
-    *(volatile char*)addr = 0;
 
     int actual_node = -1;
     if (get_mempolicy(&actual_node, nullptr, 0, addr, MPOL_F_NODE | MPOL_F_ADDR) == 0) {
@@ -79,9 +124,6 @@ void* allocate_cxl_memory(int numa_node, size_t size) {
                size, actual_node, numa_node);
         fflush(stderr);
     }
-
-    // NO MEMSET - MAP_POPULATE already zeroed the pages!
-    // memset(addr, 0, size);  // <-- REMOVED: This was redundant and slow!
 
     auto t_end = std::chrono::high_resolution_clock::now();
     auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t_end - t_start).count();

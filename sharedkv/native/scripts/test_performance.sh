@@ -10,13 +10,13 @@ echo "=========================================="
 
 # Test configuration
 NUMA_NODE=3
-THREADS=16
-NUM_CLIENTS=16
-NUM_WORKERS=16
+THREADS=32
+NUM_CLIENTS=32
+NUM_WORKERS=32
 QUEUE_DEPTH=2048
 RING_BUFFER_SIZE=2048
-RECORDCOUNT=100000
-OPCOUNT=100000
+RECORDCOUNT=1000000
+OPCOUNT=1000000
 
 echo "Configuration:"
 echo "  Threads: $THREADS"
@@ -28,48 +28,69 @@ echo "  RecordCount: $RECORDCOUNT"
 echo "  OperationCount: $OPCOUNT"
 echo ""
 
+# # Load phase
+# echo "=========================================="
+# echo "LOAD PHASE (Workload A)"
+# echo "=========================================="
+# java -Djava.library.path=/usr/lib \
+#   -cp "$CLASSPATH" \
+#   site.ycsb.Client \
+#   -db site.ycsb.db.sharedkv.SharedKVClient \
+#   -P workloads/workloada \
+#   -p sharedkv.mode=cxl \
+#   -p sharedkv.threading=multi \
+#   -p sharedkv.numa_node=$NUMA_NODE \
+#   -p sharedkv.num_clients=$NUM_CLIENTS \
+#   -p sharedkv.num_workers=$NUM_WORKERS \
+#   -p sharedkv.queue_depth=$QUEUE_DEPTH \
+#   -p sharedkv.ring_buffer_size=$RING_BUFFER_SIZE \
+#   -threads $THREADS \
+#   -load \
+#   -p recordcount=$RECORDCOUNT \
+#   2>&1 | grep -E "Throughput|AverageLatency|95thPercentileLatency|99thPercentileLatency|Return=" | grep INSERT
+
+# echo ""
+# echo "=========================================="
+# echo "RUN PHASE (Workload A - 100% Read + 50% Update)"
+# echo "=========================================="
+# java -Djava.library.path=/usr/lib \
+#   -cp "$CLASSPATH" \
+#   site.ycsb.Client \
+#   -db site.ycsb.db.sharedkv.SharedKVClient \
+#   -P workloads/workloada \
+#   -p sharedkv.mode=cxl \
+#   -p sharedkv.threading=multi \
+#   -p sharedkv.numa_node=$NUMA_NODE \
+#   -p sharedkv.num_clients=$NUM_CLIENTS \
+#   -p sharedkv.num_workers=$NUM_WORKERS \
+#   -p sharedkv.queue_depth=$QUEUE_DEPTH \
+#   -p sharedkv.ring_buffer_size=$RING_BUFFER_SIZE \
+#   -threads $THREADS \
+#   -t \
+#   -p recordcount=$RECORDCOUNT \
+#   -p operationcount=$OPCOUNT \
+#   2>&1 | grep -E "Throughput|AverageLatency|95thPercentileLatency|99thPercentileLatency|Return=" | grep -E "READ|UPDATE|OVERALL"
+
 # Load phase
 echo "=========================================="
-echo "LOAD PHASE (Workload A)"
+echo "LOAD PHASE (Workload C)"
 echo "=========================================="
 java -Djava.library.path=/usr/lib \
   -cp "$CLASSPATH" \
   site.ycsb.Client \
   -db site.ycsb.db.sharedkv.SharedKVClient \
-  -P workloads/workloada \
+  -P workloads/workloadc \
   -p sharedkv.mode=cxl \
   -p sharedkv.threading=multi \
   -p sharedkv.numa_node=$NUMA_NODE \
-  -p sharedkv.num_clients=$NUM_CLIENTS \
-  -p sharedkv.num_workers=$NUM_WORKERS \
+  -p sharedkv.num_clients=$THREADS \
+  -p sharedkv.num_workers=$THREADS \
   -p sharedkv.queue_depth=$QUEUE_DEPTH \
   -p sharedkv.ring_buffer_size=$RING_BUFFER_SIZE \
   -threads $THREADS \
   -load \
   -p recordcount=$RECORDCOUNT \
   2>&1 | grep -E "Throughput|AverageLatency|95thPercentileLatency|99thPercentileLatency|Return=" | grep INSERT
-
-echo ""
-echo "=========================================="
-echo "RUN PHASE (Workload A - 50% Read + 50% Update)"
-echo "=========================================="
-java -Djava.library.path=/usr/lib \
-  -cp "$CLASSPATH" \
-  site.ycsb.Client \
-  -db site.ycsb.db.sharedkv.SharedKVClient \
-  -P workloads/workloada \
-  -p sharedkv.mode=cxl \
-  -p sharedkv.threading=multi \
-  -p sharedkv.numa_node=$NUMA_NODE \
-  -p sharedkv.num_clients=$NUM_CLIENTS \
-  -p sharedkv.num_workers=$NUM_WORKERS \
-  -p sharedkv.queue_depth=$QUEUE_DEPTH \
-  -p sharedkv.ring_buffer_size=$RING_BUFFER_SIZE \
-  -threads $THREADS \
-  -t \
-  -p recordcount=$RECORDCOUNT \
-  -p operationcount=$OPCOUNT \
-  2>&1 | grep -E "Throughput|AverageLatency|95thPercentileLatency|99thPercentileLatency|Return=" | grep -E "READ|UPDATE|OVERALL"
 
 echo ""
 echo "=========================================="
@@ -83,8 +104,8 @@ java -Djava.library.path=/usr/lib \
   -p sharedkv.mode=cxl \
   -p sharedkv.threading=multi \
   -p sharedkv.numa_node=$NUMA_NODE \
-  -p sharedkv.num_clients=$NUM_CLIENTS \
-  -p sharedkv.num_workers=$NUM_WORKERS \
+  -p sharedkv.num_clients=$THREADS \
+  -p sharedkv.num_workers=$THREADS \
   -p sharedkv.queue_depth=$QUEUE_DEPTH \
   -p sharedkv.ring_buffer_size=$RING_BUFFER_SIZE \
   -threads $THREADS \

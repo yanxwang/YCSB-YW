@@ -21,7 +21,7 @@ mkdir -p build
 
 # Compile
 echo "Compiling SharedKV JNI library..."
-g++ -std=c++17 -O3 -fPIC -shared \
+g++ -std=c++17 -O3 -fPIC -shared -muintr \
     -I"include" \
     -I"$JAVA_HOME/include" \
     -I"$JAVA_HOME/include/linux" \
@@ -29,7 +29,13 @@ g++ -std=c++17 -O3 -fPIC -shared \
     src/shared_kv_bucket.cpp \
     src/SharedKV_YCSB.cpp \
     src/sharedkv_jni.cpp \
-    -pthread -lnuma
+    src/kv_context.cpp \
+    src/kv_worker.cpp \
+    src/kv_synchronizer.cpp \
+    src/kv_poller.cpp \
+    src/kv_request.cpp \
+    src/uintr_threading.cpp \
+    -pthread -lnuma -lrt
 
 if [ $? -eq 0 ]; then
     echo "Build successful! Library: build/libsharedkv_jni.so"
