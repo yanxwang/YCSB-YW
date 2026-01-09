@@ -18,8 +18,10 @@ void pin_thread_to_cpu(std::thread& th, int cpu_id) {
 
     int rc = pthread_setaffinity_np(th.native_handle(), sizeof(cpu_set_t), &cpuset);
     if (rc != 0) {
-        fprintf(stderr, "Warning: Failed to pin thread to CPU %d: %s\n",
+        fprintf(stderr, "[PIN] WARNING: Failed to pin thread to CPU %d: %s\n",
                 cpu_id, strerror(rc));
+    } else {
+        fprintf(stderr, "[PIN] Successfully pinned thread to CPU %d\n", cpu_id);
     }
 }
 
@@ -31,7 +33,9 @@ void pin_current_thread_to_cpu(int cpu_id) {
 
     int rc = pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
     if (rc != 0) {
-        fprintf(stderr, "Warning: Failed to pin current thread to CPU %d: %s\n",
+        fprintf(stderr, "[PIN] WARNING: Failed to pin current thread to CPU %d: %s\n",
                 cpu_id, strerror(rc));
+    } else {
+        fprintf(stderr, "[PIN] Successfully pinned current thread to CPU %d\n", cpu_id);
     }
 }
