@@ -5,6 +5,8 @@
 #include <thread>
 #include <chrono>
 #include <cstdio>
+#include <cerrno>
+#include <cstring>
 #include <x86gprintrin.h>  // For _senduipi
 
 // ============================================================================
@@ -12,8 +14,10 @@
 // ============================================================================
 
 struct PollerState {
-    bool was_empty;   // Was the response queue empty in the last check?
-    int uipi_index;   // UINTR sender index for this client
+    bool was_empty;     // Was the response queue empty in the last check?
+    int uipi_index;     // UINTR sender index for this client
+    int last_known_fd;  // Last registered uintr_fd (to detect changes)
+    bool error_logged;  // Has error been logged for this client?
 };
 
 // ============================================================================
@@ -25,36 +29,48 @@ void poller_thread_func(std::vector<ClientChannel*>& clients,
     size_t num_clients = clients.size();
     std::vector<PollerState> states(num_clients);
 
-    // Register as UINTR sender for each client
+    // Initialize state for each client
+    // UINTR registration is done lazily when Response threads are created
     for (size_t i = 0; i < num_clients; ++i) {
         states[i].was_empty = true;
-        states[i].uipi_index = -1;
-
-        // Wait for client response thread to create uintr_fd
-        // (Response threads are not created in this simplified version,
-        //  so we skip UINTR registration for now)
-        // In full implementation, this would wait for uintr_fd to be ready
-
-        // For now, we'll skip UINTR and just use the response_ready flag
-        // Full UINTR implementation would be added here:
-        /*
-        while (clients[i]->uintr_fd < 0 && !stop_flag.load()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
-
-        if (stop_flag.load()) return;
-
-        states[i].uipi_index = uintr_register_sender(clients[i]->uintr_fd, 0);
-        if (states[i].uipi_index < 0) {
-            fprintf(stderr, "[Poller] Failed to register sender for client %zu\n", i);
-            return;
-        }
-        */
+        states[i].uipi_index = -1;  // Not registered yet
+        states[i].last_known_fd = -1;
+        states[i].error_logged = false;
     }
 
     // Main polling loop (edge-triggered detection)
     while (!stop_flag.load(std::memory_order_relaxed)) {
         for (size_t i = 0; i < num_clients; ++i) {
+            // Check if uintr_fd has changed (new async phase started)
+            int current_fd = clients[i]->uintr_fd;
+            bool fd_changed = (current_fd != states[i].last_known_fd) && (current_fd >= 0);
+            bool fd_ready = clients[i]->uintr_fd_ready.load(std::memory_order_acquire);
+
+            // Lazy UINTR sender registration (or re-registration if fd changed)
+            if (fd_changed && fd_ready) {
+                // Unregister old sender if exists
+                if (states[i].uipi_index >= 0) {
+                    uintr_unregister_sender(states[i].uipi_index, 0);
+                    states[i].uipi_index = -1;
+                }
+
+                // Register new sender
+                states[i].uipi_index = uintr_register_sender(current_fd, 0);
+                if (states[i].uipi_index >= 0) {
+                    fprintf(stderr, "[Poller] Registered sender for client %zu (fd=%d, uipi_index=%d)\n",
+                            i, current_fd, states[i].uipi_index);
+                    states[i].last_known_fd = current_fd;
+                    states[i].error_logged = false;  // Reset error state for new fd
+                } else if (!states[i].error_logged) {
+                    // Log error once per fd
+                    fprintf(stderr, "[Poller] ERROR: Failed to register sender for client %zu "
+                                    "(fd=%d, errno=%d: %s) - will not use UINTR for this client\n",
+                            i, current_fd, errno, strerror(errno));
+                    states[i].error_logged = true;
+                    states[i].last_known_fd = current_fd;  // Mark as seen to avoid repeated attempts
+                }
+            }
+
             bool is_empty_now = clients[i]->resp_q->is_empty();
 
             // Detect empty → non-empty transition

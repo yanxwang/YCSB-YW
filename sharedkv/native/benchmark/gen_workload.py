@@ -162,8 +162,8 @@ def main():
                        help='Number of records to load (default: 100000)')
     parser.add_argument('-o', '--operations', type=int, default=1000000,
                        help='Number of operations in transaction phase (default: 1000000)')
-    parser.add_argument('-d', '--output-dir', default='benchmark/workloads',
-                       help='Output directory (default: benchmark/workloads)')
+    parser.add_argument('-d', '--output-dir', default='workloads',
+                       help='Output directory (default: workloads)')
 
     args = parser.parse_args()
 

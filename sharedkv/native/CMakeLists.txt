@@ -25,6 +25,7 @@ set(CORE_SOURCES
     src/kv_worker.cpp
     src/kv_synchronizer.cpp
     src/kv_poller.cpp
+    src/kv_response_thread.cpp
     src/kv_context.cpp
 )
 
@@ -32,15 +33,15 @@ set(YCSB_SOURCES
     src/SharedKV_YCSB.cpp
 )
 
-set(JNI_SOURCES
-    src/sharedkv_jni.cpp
-)
+# JNI sources (disabled - not needed for native benchmark)
+# set(JNI_SOURCES
+#     src/sharedkv_jni.cpp
+# )
 
-# Build shared library
+# Build shared library (without JNI for now)
 add_library(sharedkv_jni SHARED
     ${CORE_SOURCES}
     ${YCSB_SOURCES}
-    ${JNI_SOURCES}
 )
 
 # Link libraries

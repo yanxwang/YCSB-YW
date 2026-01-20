@@ -1,40 +1,47 @@
-#!/bin/bash
+clear
+./build.sh
 
-# Quick test script for native benchmark
+./../scripts/clean_shm.sh
+./build/sharedkv_benchmark -w workloadc -n 2 -c 2 -W 8 -t 5 -s 64 -a
 
-set -e
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+# #!/bin/bash
 
-echo "=========================================="
-echo "Quick Test: Native Benchmark"
-echo "=========================================="
+# # Quick test script for native benchmark
 
-# Clean shared memory
-echo "Cleaning shared memory..."
-../scripts/clean_shm.sh > /dev/null 2>&1
+# set -e
 
-# Generate small workload if not exists
-if [ ! -f "workloads/workloadc_load.txt" ]; then
-    echo "Generating test workload (10K records)..."
-    python3 gen_workload.py -w c -r 10000 -o 50000
-fi
+# SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# cd "$SCRIPT_DIR"
 
-echo ""
-echo "Running benchmark (4 clients, 4 workers, 5 seconds)..."
-echo ""
+# echo "=========================================="
+# echo "Quick Test: Native Benchmark"
+# echo "=========================================="
 
-# Run benchmark from parent directory so paths work correctly
-cd "$SCRIPT_DIR/.."
+# # Clean shared memory
+# echo "Cleaning shared memory..."
+# ../scripts/clean_shm.sh > /dev/null 2>&1
 
-# Run benchmark (filter out debug logs)
-benchmark/build/sharedkv_benchmark -w workloadc -n 3 -c 32 -W 32 -s 64 -t 10 2>&1 | \
-    grep -v "^\[Latency\]" | \
-    grep -v "^\[PIN\]" | \
-    grep -v "^CXL:"
+# # Generate small workload if not exists
+# if [ ! -f "workloads/workloadc_load.txt" ]; then
+#     echo "Generating test workload (10K records)..."
+#     python3 gen_workload.py -w c -r 10000 -o 50000
+# fi
 
-echo ""
-echo "=========================================="
-echo "Quick test complete!"
-echo "=========================================="
+# echo ""
+# echo "Running benchmark (4 clients, 4 workers, 5 seconds)..."
+# echo ""
+
+# # Run benchmark from parent directory so paths work correctly
+# cd "$SCRIPT_DIR/.."
+
+# # Run benchmark (filter out debug logs)
+# benchmark/build/sharedkv_benchmark -w workloadc -n 3 -c 32 -W 32 -s 64 -t 10 2>&1 | \
+#     grep -v "^\[Latency\]" | \
+#     grep -v "^\[PIN\]" | \
+#     grep -v "^CXL:"
+
+# echo ""
+# echo "=========================================="
+# echo "Quick test complete!"
+# echo "=========================================="

@@ -44,6 +44,18 @@ void KVRequest::cleanup() {
     value_len = 0;
 }
 
+void KVRequest::recycle() {
+    // First cleanup any heap-allocated value data
+    cleanup();
+
+    // Return to pool via function pointer, or delete if heap-allocated
+    if (recycle_func) {
+        recycle_func(recycle_ctx, this);
+    } else {
+        delete this;
+    }
+}
+
 // ============================================================================
 // KVResponse implementation
 // ============================================================================

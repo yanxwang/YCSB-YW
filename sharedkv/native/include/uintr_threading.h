@@ -81,66 +81,119 @@ struct __uintr_frame {
 #endif
 
 // ============================================================================
-// Lock-Free SPSC Queue (Single Producer Single Consumer)
-// ============================================================================
-// Cache-line aligned for performance, uses monotonic indices
+// MPSC (Multiple Producer Single Consumer) Lock-Free Queue
+// Uses sequence numbers per slot to ensure correctness with multiple producers
+// Cache-line aligned for performance
 template<typename T>
 struct alignas(64) LockFreeQueue {
-    T* entries;
-    size_t size;
-    alignas(64) std::atomic<uint64_t> head{0};  // Producer writes here
-    alignas(64) std::atomic<uint64_t> tail{0};  // Consumer reads from here
+    // Each slot has a sequence number to track write completion
+    struct Slot {
+        std::atomic<uint64_t> sequence;
+        T data;
+    };
 
-    LockFreeQueue(size_t queue_size) : size(queue_size) {
-        // Use aligned allocation for cache line alignment
-        entries = static_cast<T*>(aligned_alloc(64, sizeof(T) * size));
-        if (!entries) {
+    Slot* slots;
+    size_t size;
+    size_t mask;  // size - 1, for fast modulo (requires power-of-2 size)
+    alignas(64) std::atomic<uint64_t> head{0};  // Producer reservation counter
+    alignas(64) std::atomic<uint64_t> tail{0};  // Consumer read position
+
+    LockFreeQueue(size_t queue_size) : size(queue_size), mask(queue_size - 1) {
+        // Ensure size is power of 2 for fast modulo
+        if ((queue_size & (queue_size - 1)) != 0) {
+            // Round up to next power of 2
+            queue_size--;
+            queue_size |= queue_size >> 1;
+            queue_size |= queue_size >> 2;
+            queue_size |= queue_size >> 4;
+            queue_size |= queue_size >> 8;
+            queue_size |= queue_size >> 16;
+            queue_size |= queue_size >> 32;
+            queue_size++;
+            size = queue_size;
+            mask = queue_size - 1;
+        }
+
+        // Allocate slots with cache-line alignment
+        slots = static_cast<Slot*>(aligned_alloc(64, sizeof(Slot) * size));
+        if (!slots) {
             throw std::bad_alloc();
+        }
+
+        // Initialize sequence numbers
+        // Slot i starts with sequence = i (ready for write at position i)
+        for (size_t i = 0; i < size; i++) {
+            slots[i].sequence.store(i, std::memory_order_relaxed);
         }
     }
 
     ~LockFreeQueue() {
-        free(entries);
+        free(slots);
     }
 
     // Producer: enqueue item (non-blocking)
+    // MPSC-safe: Multiple producers can safely enqueue concurrently
     bool enqueue(const T& item) {
-        uint64_t h = head.load(std::memory_order_relaxed);
-        uint64_t t = tail.load(std::memory_order_acquire);
+        uint64_t pos = head.load(std::memory_order_relaxed);
 
-        // Check if full (monotonic indices)
-        if (h - t >= size) {
-            return false;  // Queue full
+        while (true) {
+            Slot& slot = slots[pos & mask];
+            uint64_t seq = slot.sequence.load(std::memory_order_acquire);
+            int64_t diff = static_cast<int64_t>(seq) - static_cast<int64_t>(pos);
+
+            if (diff == 0) {
+                // Slot is ready for writing at this position
+                if (head.compare_exchange_weak(pos, pos + 1,
+                                               std::memory_order_relaxed,
+                                               std::memory_order_relaxed)) {
+                    // Successfully reserved this slot
+                    slot.data = item;
+                    // Mark slot as written by setting sequence to pos + 1
+                    slot.sequence.store(pos + 1, std::memory_order_release);
+                    return true;
+                }
+                // CAS failed, retry with updated pos
+            } else if (diff < 0) {
+                // Queue is full (consumer hasn't caught up)
+                return false;
+            } else {
+                // Another producer reserved this slot, move to next
+                pos = head.load(std::memory_order_relaxed);
+            }
         }
-
-        entries[h % size] = item;
-        head.store(h + 1, std::memory_order_release);
-        return true;
     }
 
     // Consumer: dequeue item (non-blocking)
+    // Single consumer only - not thread-safe for multiple consumers
     bool dequeue(T& item) {
-        uint64_t t = tail.load(std::memory_order_relaxed);
-        uint64_t h = head.load(std::memory_order_acquire);
+        uint64_t pos = tail.load(std::memory_order_relaxed);
+        Slot& slot = slots[pos & mask];
+        uint64_t seq = slot.sequence.load(std::memory_order_acquire);
+        int64_t diff = static_cast<int64_t>(seq) - static_cast<int64_t>(pos + 1);
 
-        // Check if empty
-        if (t >= h) {
-            return false;  // Queue empty
+        if (diff < 0) {
+            // Slot not yet written
+            return false;
         }
 
-        item = entries[t % size];
-        tail.store(t + 1, std::memory_order_release);
+        // Slot is ready to read
+        item = slot.data;
+        // Mark slot as available for future writes
+        // Next valid write position for this slot is pos + size
+        slot.sequence.store(pos + size, std::memory_order_release);
+        tail.store(pos + 1, std::memory_order_relaxed);
         return true;
     }
 
     // Check if queue is empty (for poller edge detection)
     bool is_empty() const {
-        uint64_t t = tail.load(std::memory_order_relaxed);
-        uint64_t h = head.load(std::memory_order_acquire);
-        return t >= h;
+        uint64_t pos = tail.load(std::memory_order_relaxed);
+        const Slot& slot = slots[pos & mask];
+        uint64_t seq = slot.sequence.load(std::memory_order_acquire);
+        return static_cast<int64_t>(seq) - static_cast<int64_t>(pos + 1) < 0;
     }
 
-    // Get current queue size
+    // Get current queue size (approximate)
     size_t get_size() const {
         uint64_t h = head.load(std::memory_order_acquire);
         uint64_t t = tail.load(std::memory_order_acquire);

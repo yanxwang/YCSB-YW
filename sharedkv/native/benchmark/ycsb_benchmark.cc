@@ -97,8 +97,8 @@ void print_benchmark_stats(const char* phase_name,
 
 WorkloadFileNames get_workload_files(const char* workload_name) {
     WorkloadFileNames files;
-    files.load_file = std::string("benchmark/workloads/") + workload_name + "_load.txt";
-    files.trans_file = std::string("benchmark/workloads/") + workload_name + "_trans.txt";
+    files.load_file = std::string("workloads/") + workload_name + "_load.txt";
+    files.trans_file = std::string("workloads/") + workload_name + "_trans.txt";
     return files;
 }
 
@@ -172,6 +172,8 @@ int execute_operation(SharedKVContext* ctx, uint32_t client_id,
     req->client_id = client_id;
     req->resp_q_ptr = ctx->clients[client_id]->resp_q;
     req->timestamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    req->recycle_func = nullptr;  // CRITICAL: Initialize to nullptr for heap-allocated requests
+    req->recycle_ctx = nullptr;
 
     // Set operation type and data
     switch (op.op_type) {
@@ -208,8 +210,20 @@ int execute_operation(SharedKVContext* ctx, uint32_t client_id,
     uint32_t bucket_id = hash % NUM_BUCKETS;
     req->target_worker_id = bucket_id % ctx->num_workers;
 
-    // Submit request and wait for response
-    KVResponse resp = ctx->submit_request(client_id, req, 5000);
+    // Record timestamp for latency measurement
+    req->timestamp = get_time_nsec();
+
+    // Submit request (non-blocking, busy-spin if queue full)
+    while (!ctx->submit_request(client_id, req)) {
+        std::this_thread::yield();
+    }
+
+    // Synchronous Mode: Wait for response
+    // (In Async Mode, Response Thread handles this)
+    KVResponse resp;
+    if (!ctx->get_response(client_id, resp, 5000)) {
+        return -1;
+    }
 
     if (latency_ns) {
         uint64_t end_ns = get_time_nsec();
@@ -219,14 +233,9 @@ int execute_operation(SharedKVContext* ctx, uint32_t client_id,
     // Check response status
     if (resp.status == KVStatus::SUCCESS) {
         return 0;
-    } else if (resp.status == KVStatus::NOT_FOUND && op.op_type == YCSBOpType::READ) {
-        // NOT_FOUND is considered a failure for READ operations
-        return -1;
-    } else if (resp.status == KVStatus::ERROR) {
+    } else {
         return -1;
     }
-
-    return 0;
 }
 
 // ============================================================================
@@ -247,12 +256,11 @@ void* benchmark_throughput_worker(void* arg) {
     uint64_t local_ops = 0;
     uint64_t local_failed = 0;
 
-    // Execute operations
+    // Execute operations (Synchronous Mode: submit + wait for each response)
     uint32_t op_idx = args->ops_start_idx;
     uint32_t ops_end = args->ops_start_idx + args->ops_count;
 
     while (!*(args->should_stop)) {
-        // Execute operation
         const YCSBOperation& op = (*args->operations)[op_idx];
         int ret = execute_operation(args->ctx, args->client_id, op, nullptr);
 

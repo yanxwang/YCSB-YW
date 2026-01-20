@@ -30,3 +30,7 @@ hs_err_pid*
 
 # Native libraries
 *.jnilib
+
+core.*
+sharedkv/native/benchmark/workloads/*.txt
+sharedkv/native/benchmark/log

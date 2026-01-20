@@ -42,7 +42,12 @@ struct alignas(64) KVRequest {
 
     // Pre-computed routing information (set by Java thread in JNI)
     uint32_t target_worker_id;       // Pre-computed worker ID based on key hash
-    uint32_t padding;                // Padding to maintain 64-byte alignment
+
+    // Object pool support (for async mode without heap allocation)
+    // recycle_func: function pointer to return this request to pool
+    // If non-null, calls recycle_func(recycle_ctx, this) instead of delete
+    void (*recycle_func)(void* ctx, KVRequest* req);
+    void* recycle_ctx;               // Context for recycle_func (e.g., RequestPool*)
 
     // Helper methods
     void set_key(const std::string& key);
@@ -50,6 +55,7 @@ struct alignas(64) KVRequest {
     std::string get_key() const;
     std::string get_value() const;
     void cleanup();  // Free heap-allocated data
+    void recycle();  // Return to pool or delete
 };
 
 // KV Response structure (smaller, cache-friendly)

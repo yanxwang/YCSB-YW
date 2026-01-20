@@ -14,11 +14,11 @@ if [ ! -f "$BENCHMARK_BIN" ]; then
 fi
 
 # Default configuration
-WORKLOAD="workloadc"
-NUMA_NODE=3
-CLIENTS=32
-WORKERS=32
-DURATION=10
+WORKLOAD="workloada"
+NUMA_NODE=2
+CLIENTS=8
+WORKERS=8
+DURATION=5
 CPU_START=64
 MODE="throughput"
 
