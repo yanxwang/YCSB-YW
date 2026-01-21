@@ -1,19 +1,15 @@
-# SharedKV - 高性能 CXL 内存键值存储系统 完整文档
+# SharedKV - 高性能 CXL 内存键值存储系统
 
 ## 目录
 
 1. [项目概述](#1-项目概述)
 2. [系统架构](#2-系统架构)
-3. [目录结构与文件说明](#3-目录结构与文件说明)
-4. [核心模块详解](#4-核心模块详解)
-5. [数据流与工作流程](#5-数据流与工作流程)
-6. [编译与安装](#6-编译与安装)
-7. [运行指南](#7-运行指南)
-8. [配置参数](#8-配置参数)
-9. [调试指南](#9-调试指南)
-10. [性能调优](#10-性能调优)
-11. [常见问题](#11-常见问题)
-12. [API 参考](#12-api-参考)
+3. [目录结构](#3-目录结构)
+4. [编译与安装](#4-编译与安装)
+5. [运行指南](#5-运行指南)
+6. [配置参数](#6-配置参数)
+7. [调试指南](#7-调试指南)
+8. [性能调优](#8-性能调优)
 
 ---
 
@@ -21,1301 +17,388 @@
 
 ### 1.1 简介
 
-SharedKV 是一个高性能的键值存储系统，专为 CXL (Compute Express Link) 内存和持久内存优化设计。它提供：
+SharedKV 是一个高性能的键值存储系统，专为 CXL (Compute Express Link) 内存优化设计。
 
-- **NUMA 感知的 CXL 内存分配**：默认存储在 CXL 内存（NUMA 节点绑定）
-- **基于偏移的指针**：允许多个进程访问相同的共享内存
-- **无锁设计**：基于自旋锁的每桶并发控制
-- **线性分配器**：追加写入策略，高效内存分配
-- **YCSB 集成**：兼容 Yahoo! Cloud Serving Benchmark
-- **JNI 桥接**：Java 原生接口，无缝集成 Java 应用
-- **多线程架构**：基于 UINTR 的高效异步通知机制
+**核心特性**：
+- **NUMA 感知的 CXL 内存分配**
+- **无锁 Lock-Free 队列**：MPSC (Multiple Producer Single Consumer) 设计
+- **解耦的异步架构**：Request Queues、Response Queues、Workers 完全独立配置
+- **灵活的线程映射**：`thread_id % num_queues` 自动分配
+- **UINTR 支持**：用户态中断通知机制
 
-### 1.2 性能亮点
+### 1.2 性能
 
-在 CXL 内存（NUMA node 3, 256GB）上的测试结果：
-
-| 指标 | 单线程模式 | 多线程模式 (8线程) | 提升 |
-|------|-----------|-------------------|------|
-| **吞吐量** | ~15K ops/sec | **83K ops/sec** | **5.5x** |
-| **READ 延迟** | ~45 μs | **18 μs** | **2.5x** |
-| **UPDATE 延迟** | ~80 μs | **28 μs** | **2.9x** |
-
-Native Benchmark（纯 C++，无 JNI 开销）性能：
-- **~1.75M ops/sec**（32 clients, 32 workers）
-- 相比 Java YCSB 约 **3.5x** 性能提升
+Native Benchmark 性能：
+- **~2.9M ops/sec**（8 clients, 8 workers, workloadc）
+- **~4.5M ops/sec**（8 clients, 4 queues, 8 workers）
 
 ---
 
 ## 2. 系统架构
 
-### 2.1 整体架构图
+### 2.1 简化架构图
 
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│                      YCSB Java Application                           │
-│                   (Multiple Client Threads)                          │
-└────────────────────────────┬─────────────────────────────────────────┘
-                             │ JNI calls
-                             ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│                  JNI Bridge (sharedkv_jni.cpp)                       │
-│  • Java ↔ C++ 类型转换    • Thread-local client ID 管理              │
-│  • Request 创建与路由                                                 │
-└────────────────────────────┬─────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                     Benchmark / Application                         │
+│                    (Request Threads + Response Threads)             │
+└────────────────────────────┬────────────────────────────────────────┘
                              │
-                             ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│              SharedKVContext (Multi-threaded Backend)                │
-│                                                                      │
-│  ┌────────────────────────────────────────────────────────────────┐ │
-│  │              Per-Client Channels (ClientChannel)               │ │
-│  │  ┌──────────────┐      ┌──────────────┐      ┌──────────────┐ │ │
-│  │  │  Client 0    │      │  Client 1    │  ... │  Client N    │ │ │
-│  │  │ req_q (4096) │      │ req_q (4096) │      │ req_q (4096) │ │ │
-│  │  │ resp_q(4096) │      │ resp_q(4096) │      │ resp_q(4096) │ │ │
-│  │  └──────────────┘      └──────────────┘      └──────────────┘ │ │
-│  └────────────────────────────┬───────────────────────────────────┘ │
-│                               │                                      │
-│  ┌────────────────────────────▼───────────────────────────────────┐ │
-│  │                  Synchronizer Thread (CPU 0)                   │ │
-│  │  • Round-robin 轮询所有 client 请求队列                        │ │
-│  │  • 分配全局序列号                                              │ │
-│  │  • 基于 hash(key) 路由到对应 Worker                           │ │
-│  └────────────────────────────┬───────────────────────────────────┘ │
-│                               │                                      │
-│  ┌────────────────────────────▼───────────────────────────────────┐ │
-│  │                   Worker Threads (CPU 2+)                      │ │
-│  │  ┌─────────┐  ┌─────────┐  ┌─────────┐       ┌─────────┐     │ │
-│  │  │Worker 0 │  │Worker 1 │  │Worker 2 │  ...  │Worker N │     │ │
-│  │  │Ring Buf │  │Ring Buf │  │Ring Buf │       │Ring Buf │     │ │
-│  │  │Buckets: │  │Buckets: │  │Buckets: │       │Buckets: │     │ │
-│  │  │0,N,2N...│  │1,N+1,...│  │2,N+2,...│       │N-1,...  │     │ │
-│  │  └─────────┘  └─────────┘  └─────────┘       └─────────┘     │ │
-│  └────────────────────────────┬───────────────────────────────────┘ │
-│                               │                                      │
-│  ┌────────────────────────────▼───────────────────────────────────┐ │
-│  │                    Poller Thread (CPU 1)                       │ │
-│  │  • 监控所有 response 队列状态                                   │ │
-│  │  • 边缘触发检测 (empty → non-empty)                            │ │
-│  │  • 发送 UINTR 信号唤醒 response 线程                           │ │
-│  └────────────────────────────────────────────────────────────────┘ │
-└──────────────────────────────┬───────────────────────────────────────┘
-                               │
-                               ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│                    SharedHashTable (16 GB)                           │
-│  ┌──────────┬──────────┬──────────┬──────────┐                      │
-│  │ Bucket 0 │ Bucket 1 │ Bucket 2 │ ... 4095 │  (4096 buckets)      │
-│  │  Lock    │  Lock    │  Lock    │   Lock   │                      │
-│  │  Chain   │  Chain   │  Chain   │   Chain  │                      │
-│  └──────────┴──────────┴──────────┴──────────┘                      │
-└──────────────────────────────┬───────────────────────────────────────┘
-                               │
-                               ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│                CXL Memory (NUMA Node 2/3)                            │
-│              或 Legacy PMem Device (/dev/pmem0)                      │
-└──────────────────────────────────────────────────────────────────────┘
+    ┌────────────────────────┼────────────────────────────┐
+    │                        │                            │
+    ▼                        ▼                            ▼
+┌─────────┐            ┌─────────┐              ┌─────────┐
+│ req_q[0]│            │ req_q[1]│     ...      │req_q[N] │
+└────┬────┘            └────┬────┘              └────┬────┘
+     │                      │                        │
+     └──────────────────────┼────────────────────────┘
+                            │
+                            ▼
+            ┌───────────────────────────────┐
+            │    Synchronizer (CPU 0)       │
+            │  Round-robin poll all req_q   │
+            │  Route to worker by hash(key) │
+            └───────────────┬───────────────┘
+                            │
+    ┌───────────────────────┼───────────────────────┐
+    │                       │                       │
+    ▼                       ▼                       ▼
+┌─────────┐           ┌─────────┐           ┌─────────┐
+│Worker 0 │           │Worker 1 │    ...    │Worker M │
+│Ring Buf │           │Ring Buf │           │Ring Buf │
+└────┬────┘           └────┬────┘           └────┬────┘
+     │                     │                     │
+     └─────────────────────┼─────────────────────┘
+                           │
+                           ▼
+                  ┌─────────────────┐
+                  │ SharedHashTable │
+                  │   (CXL Memory)  │
+                  └────────┬────────┘
+                           │
+     ┌─────────────────────┼─────────────────────┐
+     │                     │                     │
+     ▼                     ▼                     ▼
+┌─────────┐          ┌─────────┐          ┌─────────┐
+│resp_q[0]│          │resp_q[1]│   ...    │resp_q[K]│
+└────┬────┘          └────┬────┘          └────┬────┘
+     │                    │                    │
+     └────────────────────┼────────────────────┘
+                          │
+                          ▼
+            ┌───────────────────────────────┐
+            │      Poller (CPU 1)           │
+            │  Monitor resp_q, send UINTR   │
+            └───────────────────────────────┘
 ```
 
-### 2.2 线程模型
+### 2.2 核心组件
 
-| 线程类型 | 数量 | CPU 绑定 | 职责 |
-|---------|------|---------|------|
-| **Synchronizer** | 1 | CPU 0 (固定) | 轮询所有 req_q，路由请求到 worker |
-| **Poller** | 1 | CPU 1 (固定) | 检测 resp_q 非空，触发 UINTR 通知 |
-| **Worker** | N (可配置) | CPU 2+ (动态分配) | 执行 KV 操作 (GET/PUT/DELETE) |
-| **Java App Thread** | M (YCSB 配置) | 不绑定 | 提交请求，等待响应 |
+| 组件 | 数量 | 配置参数 | 职责 |
+|------|------|----------|------|
+| **Request Queue** | N | `-req_q` | 接收请求，被 Synchronizer 消费 |
+| **Response Queue** | K | `-resp_q` | 存放响应，被 Response Threads 消费 |
+| **Request Thread** | R | `-req_th` | 提交请求到 `req_q[thread_id % N]` |
+| **Response Thread** | S | `-resp_th` | 从 `resp_q[thread_id % K]` 读取响应 |
+| **Worker** | M | `-worker_th` | 执行 KV 操作 (GET/PUT/DELETE) |
+| **Synchronizer** | 1 | 固定 | 路由请求到 Worker |
+| **Poller** | 1 | 固定 | 监控 resp_q，发送 UINTR |
+
+### 2.3 队列映射规则
+
+```
+Request Thread i  →  req_q[i % num_req_queues]
+Response Thread i →  resp_q[i % num_resp_queues]
+```
+
+**示例**：
+- 8 个 Request Threads, 4 个 Request Queues:
+  - Thread 0,4 → req_q[0]
+  - Thread 1,5 → req_q[1]
+  - Thread 2,6 → req_q[2]
+  - Thread 3,7 → req_q[3]
+
+### 2.4 数据结构
+
+```cpp
+// 简化的配置结构
+struct AsyncConfig {
+    uint32_t num_req_queues{1};    // 请求队列数量
+    uint32_t num_resp_queues{1};   // 响应队列数量
+    uint32_t num_req_threads{1};   // 请求线程数量
+    uint32_t num_resp_threads{1};  // 响应线程数量
+    uint32_t num_workers{1};       // Worker 线程数量
+    size_t req_queue_depth{2048};  // 请求队列深度
+    size_t resp_queue_depth{2048}; // 响应队列深度
+};
+
+// 主 Context (无 ClientChannel 间接层)
+struct SharedKVContext {
+    std::vector<RequestQueue*> req_queues;
+    std::vector<ResponseQueue*> resp_queues;
+    std::vector<KVWorker*> workers;
+    AsyncConfig config;
+
+    // 直接队列访问
+    LockFreeQueue<KVRequest*>* get_req_queue(uint32_t thread_id) {
+        return req_queues[thread_id % config.num_req_queues]->queue;
+    }
+    LockFreeQueue<KVResponse>* get_resp_queue(uint32_t thread_id) {
+        return resp_queues[thread_id % config.num_resp_queues]->queue;
+    }
+};
+```
 
 ---
 
-## 3. 目录结构与文件说明
+## 3. 目录结构
 
 ```
 sharedkv/native/
-├── include/                      # 公共头文件
-│   ├── shared_kv.h               # 核心数据结构：SharedHashTable, KVWorker, ClientChannel
-│   ├── kv_request.h              # Request/Response 消息定义
-│   ├── uintr_threading.h         # UINTR syscalls, Lock-free queue, CPU affinity
-│   └── ycsb_wrapper.h            # YCSB DB 接口定义
+├── include/
+│   ├── shared_kv.h          # 核心数据结构 (AsyncConfig, SharedKVContext)
+│   ├── kv_request.h         # Request/Response 定义
+│   └── uintr_threading.h    # LockFreeQueue, CPU affinity
 │
-├── src/                          # C++ 实现源码
-│   ├── shared_kv_bucket.cpp      # 核心 Hash Table 实现：kv_put/kv_get/kv_delete
-│   ├── kv_context.cpp            # SharedKVContext 生命周期管理
-│   ├── kv_synchronizer.cpp       # Synchronizer 线程主函数
-│   ├── kv_worker.cpp             # Worker 线程主函数
-│   ├── kv_poller.cpp             # Poller 线程主函数
-│   ├── kv_response_thread.cpp    # Response 线程实现
-│   ├── kv_request.cpp            # Request/Response 序列化
-│   ├── sharedkv_jni.cpp          # JNI 桥接层
-│   ├── SharedKV_YCSB.cpp         # YCSB Wrapper 实现
-│   └── uintr_threading.cpp       # UINTR 和 CPU 绑定实现
+├── src/
+│   ├── shared_kv_bucket.cpp # Hash Table 核心实现
+│   ├── kv_context.cpp       # SharedKVContext 生命周期
+│   ├── kv_synchronizer.cpp  # Synchronizer 线程
+│   ├── kv_worker.cpp        # Worker 线程
+│   └── kv_poller.cpp        # Poller 线程
 │
-├── benchmark/                    # 纯 C++ YCSB Benchmark
-│   ├── benchmark_main.cc         # Benchmark 主入口
-│   ├── ycsb_benchmark.cc         # 同步模式 Benchmark 实现
-│   ├── ycsb_benchmark.h          # Benchmark API 定义
-│   ├── async_benchmark.cc        # 异步模式 Benchmark 实现
-│   ├── async_benchmark.h         # 异步 Benchmark API
-│   ├── globals.cc                # 全局变量定义
-│   ├── gen_workload.py           # Workload 生成脚本
-│   ├── build.sh                  # 编译脚本
-│   ├── run_benchmark.sh          # 运行脚本
-│   ├── CMakeLists.txt            # CMake 配置
-│   └── workloads/                # 生成的 workload 文件
-│       ├── workloada_load.txt
-│       ├── workloada_trans.txt
-│       ├── workloadb_load.txt
-│       ├── workloadb_trans.txt
-│       ├── workloadc_load.txt
-│       └── workloadc_trans.txt
+├── benchmark/
+│   ├── benchmark_main.cc    # Benchmark 主入口 (命令行解析)
+│   ├── ycsb_benchmark.cc    # 同步模式实现
+│   ├── async_benchmark.cc   # 异步模式实现
+│   ├── workloads/           # Workload 文件
+│   └── build/               # 构建输出
 │
-├── scripts/                      # 工具脚本
-│   ├── build.sh                  # JNI 库编译脚本
-│   ├── clean_shm.sh              # 清理共享内存
-│   ├── test_sharedkv_cxl.sh      # 完整 CXL 测试
-│   ├── test_sharedkv_simple.sh   # 简单测试
-│   ├── test_performance.sh       # 性能测试
-│   ├── compare_threading_modes.sh # 线程模式对比测试
-│   ├── verify_pinning.sh         # 验证 CPU pinning
-│   └── monitor_threads.sh        # 监控线程状态
+├── scripts/
+│   └── build.sh             # 构建脚本
 │
-├── docs/                         # 文档目录
-│   ├── README.md                 # 基础 README
-│   ├── README_MULTITHREAD.md     # 多线程架构文档
-│   ├── ARCHITECTURE_zh.md        # 架构详解（中文）
-│   ├── CONFIGURABLE_PARAMETERS.md # 可配置参数说明
-│   ├── CLIENT_THREAD_MAPPING.md  # Client-Thread 映射机制
-│   ├── REQUEST_RESPONSE_FLOW.md  # 请求响应流程
-│   ├── RESPONSE_ROUTING_DIAGRAM.md # 响应路由图解
-│   ├── REQUEST_FIELD_COMPARISON.md # Request 字段对比
-│   ├── JAVA_THREAD_WORK_COMPARISON.md # Java 线程工作对比
-│   ├── PERFORMANCE_IMPROVEMENT.md # 性能优化报告
-│   ├── COMPLETE_TESTING_SUMMARY.md # 完整测试总结
-│   └── SharedKV_MultiThreaded_Testing_Guide.md # 多线程测试指南
-│
-├── CMakeLists.txt                # 主 CMake 配置
-├── build/                        # 构建输出目录
-└── tests/                        # 测试用例
-```
-
-### 3.1 关键文件功能说明
-
-#### 头文件 (`include/`)
-
-| 文件 | 行数 | 功能描述 |
-|-----|-----|---------|
-| `shared_kv.h` | ~215 | 核心数据结构：SharedHashTable、KVWorker、ClientChannel、SpinLock |
-| `kv_request.h` | ~69 | KVRequest/KVResponse 结构定义，操作类型枚举 |
-| `uintr_threading.h` | ~159 | UINTR syscall 封装、LockFreeQueue 模板、CPU affinity 函数 |
-| `ycsb_wrapper.h` | ~50 | YCSB DB 接口抽象类定义 |
-
-#### 源文件 (`src/`)
-
-| 文件 | 行数 | 功能描述 |
-|-----|-----|---------|
-| `shared_kv_bucket.cpp` | ~301 | Hash Table 核心实现：内存分配、kv_put/kv_get/kv_delete |
-| `kv_context.cpp` | ~366 | SharedKVContext 类：初始化、线程启动、请求提交 |
-| `sharedkv_jni.cpp` | ~448 | JNI 桥接：Java/C++ 类型转换、native 方法实现 |
-| `kv_synchronizer.cpp` | ~113 | Synchronizer 线程：轮询 req_q、路由到 worker |
-| `kv_worker.cpp` | ~169 | Worker 线程：执行 KV 操作、写 response 到 resp_q |
-| `kv_poller.cpp` | ~86 | Poller 线程：边缘触发检测、UINTR 通知 |
-| `kv_response_thread.cpp` | ~75 | Response 线程：处理响应、收集统计 |
-| `kv_request.cpp` | ~59 | Request/Response 辅助函数 |
-| `SharedKV_YCSB.cpp` | ~112 | YCSB 接口实现：Map 序列化/反序列化 |
-| `uintr_threading.cpp` | ~41 | CPU pinning 实现 |
-
----
-
-## 4. 核心模块详解
-
-### 4.1 内存管理模块 (`shared_kv_bucket.cpp`)
-
-#### 4.1.1 内存模式
-
-**CXL 模式（默认）**：
-```cpp
-void* allocate_cxl_memory(int numa_node, size_t size) {
-    // 使用 mmap 分配匿名内存
-    void* ptr = mmap(NULL, size, PROT_READ | PROT_WRITE,
-                     MAP_PRIVATE | MAP_ANONYMOUS | MAP_POPULATE, -1, 0);
-
-    // 绑定到指定 NUMA 节点（CXL memory）
-    struct bitmask* mask = numa_allocate_nodemask();
-    numa_bitmask_setbit(mask, numa_node);
-    mbind(ptr, size, MPOL_BIND, mask->maskp, mask->size + 1, 0);
-
-    return ptr;
-}
-```
-
-**PMem 模式（Legacy）**：
-```cpp
-void* map_shared_memory(const char* device_path, size_t size) {
-    int fd = open(device_path, O_RDWR);  // e.g., /dev/pmem0
-    return mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-}
-```
-
-#### 4.1.2 Hash Table 数据结构
-
-```cpp
-struct SharedHashTable {
-    uint64_t magic;                     // 0xC0DEBEEFDEADF00D，用于验证初始化
-    std::atomic<uint64_t> free_offset;  // 线性分配器偏移
-    Bucket buckets[4096];               // 4096 个 bucket
-    // KV entries 在 header 之后分配
-};
-
-struct Bucket {
-    SpinLock lock;        // 基于 atomic flag 的自旋锁
-    uint64_t head_offset; // 指向第一个 KV entry 的偏移
-};
-
-struct KVEntry {
-    uint64_t hash;        // key 的哈希值
-    uint32_t key_len;     // key 长度
-    uint32_t value_len;   // value 长度
-    uint64_t next_offset; // 下一个 entry 的偏移（链表）
-    char data[];          // 变长 key + value 数据
-};
-```
-
-#### 4.1.3 KV 操作实现
-
-**PUT 操作**：
-```cpp
-int kv_put(SharedHashTable* ht, void* base,
-           const std::string& key, const std::string& value) {
-    uint64_t h = hash_key(key);
-    uint32_t bucket_id = h % NUM_BUCKETS;
-
-    Bucket& bucket = ht->buckets[bucket_id];
-    bucket.lock.lock();  // 获取 bucket 锁
-
-    // 检查是否已存在（更新场景）
-    KVEntry* existing = find_entry(bucket, base, key);
-    if (existing) {
-        // 更新现有 entry（如果空间足够）
-        // 否则分配新空间
-    } else {
-        // 分配新 entry
-        uint64_t entry_size = sizeof(KVEntry) + key.length() + value.length();
-        uint64_t offset = ht->free_offset.fetch_add(entry_size);
-
-        KVEntry* entry = (KVEntry*)((char*)base + offset);
-        entry->hash = h;
-        entry->key_len = key.length();
-        entry->value_len = value.length();
-        memcpy(entry->data, key.data(), key.length());
-        memcpy(entry->data + key.length(), value.data(), value.length());
-
-        // 插入到链表头
-        entry->next_offset = bucket.head_offset;
-        bucket.head_offset = offset;
-    }
-
-    bucket.lock.unlock();
-    return 0;
-}
-```
-
-**GET 操作**：
-```cpp
-int kv_get(SharedHashTable* ht, void* base,
-           const std::string& key, std::string& value) {
-    uint64_t h = hash_key(key);
-    uint32_t bucket_id = h % NUM_BUCKETS;
-
-    Bucket& bucket = ht->buckets[bucket_id];
-    bucket.lock.lock();
-
-    // 遍历链表查找
-    uint64_t offset = bucket.head_offset;
-    while (offset != 0) {
-        KVEntry* entry = (KVEntry*)((char*)base + offset);
-        if (entry->hash == h &&
-            memcmp(entry->data, key.data(), key.length()) == 0) {
-            // 找到了，复制 value
-            value.assign(entry->data + entry->key_len, entry->value_len);
-            bucket.lock.unlock();
-            return 0;
-        }
-        offset = entry->next_offset;
-    }
-
-    bucket.lock.unlock();
-    return -1;  // NOT_FOUND
-}
-```
-
-### 4.2 Lock-Free 队列 (`uintr_threading.h`)
-
-```cpp
-template<typename T>
-struct alignas(64) LockFreeQueue {
-    T* entries;                              // 环形缓冲区
-    size_t size;                             // 队列容量
-    alignas(64) std::atomic<uint64_t> head;  // 消费者指针（cache line 对齐）
-    alignas(64) std::atomic<uint64_t> tail;  // 生产者指针（cache line 对齐）
-
-    LockFreeQueue(size_t capacity) : size(capacity) {
-        entries = (T*)aligned_alloc(64, sizeof(T) * capacity);
-    }
-
-    bool enqueue(const T& item) {
-        uint64_t current_tail = tail.load(std::memory_order_relaxed);
-        uint64_t next_tail = (current_tail + 1) % size;
-
-        // 检查队列是否满
-        if (next_tail == head.load(std::memory_order_acquire))
-            return false;
-
-        entries[current_tail] = item;
-        tail.store(next_tail, std::memory_order_release);
-        return true;
-    }
-
-    bool dequeue(T& item) {
-        uint64_t current_head = head.load(std::memory_order_relaxed);
-
-        // 检查队列是否空
-        if (current_head == tail.load(std::memory_order_acquire))
-            return false;
-
-        item = entries[current_head];
-        head.store((current_head + 1) % size, std::memory_order_release);
-        return true;
-    }
-
-    bool is_empty() const {
-        return head.load(std::memory_order_acquire) ==
-               tail.load(std::memory_order_acquire);
-    }
-};
-```
-
-**设计要点**：
-- Cache line 对齐避免 false sharing
-- Relaxed load 优化热路径
-- Acquire/Release 语义保证内存顺序
-
-### 4.3 Request/Response 结构 (`kv_request.h`)
-
-```cpp
-enum class KVOpType : uint8_t {
-    READ = 0,
-    INSERT = 1,
-    UPDATE = 2,
-    DELETE = 3
-};
-
-enum class KVStatus : uint8_t {
-    SUCCESS = 0,
-    NOT_FOUND = 1,
-    ERROR = 2
-};
-
-struct alignas(64) KVRequest {
-    KVOpType op_type;                              // 操作类型
-    uint32_t client_id;                            // 客户端 ID（Synchronizer 设置）
-    uint64_t sequence_number;                      // 全局序列号（Synchronizer 设置）
-    uint64_t timestamp;                            // 时间戳（用于延迟测量）
-
-    uint32_t key_len;
-    char key_data[128];                            // 内联 key 存储
-
-    uint32_t value_len;
-    char* value_data;                              // 堆分配的 value（大 value）
-
-    uint32_t target_worker_id;                     // 预计算的目标 worker
-    LockFreeQueue<KVResponse>* resp_q_ptr;         // 响应队列指针（Synchronizer 设置）
-
-    void set_key(const std::string& key);
-    void set_value(const std::string& value);
-    std::string get_key() const;
-    std::string get_value() const;
-    void cleanup();
-};
-
-struct alignas(64) KVResponse {
-    KVStatus status;
-    uint32_t client_id;
-    uint64_t sequence_number;
-    uint64_t timestamp;
-
-    uint32_t result_len;
-    char result_data[256];                         // 内联结果存储
-
-    void set_result(const std::string& result);
-    std::string get_result() const;
-};
-```
-
-### 4.4 Worker 模块 (`kv_worker.cpp`)
-
-```cpp
-struct KVWorker {
-    static constexpr size_t BUFFER_SIZE = 1024;  // Ring buffer 大小
-
-    alignas(64) KVRequest* buffer[BUFFER_SIZE];  // Request 指针数组
-    alignas(64) std::atomic<uint64_t> write_idx{0};  // Synchronizer 写
-    alignas(64) std::atomic<uint64_t> read_idx{0};   // Worker 读
-
-    uint32_t worker_id;
-    uint32_t num_workers;
-
-    // 统计信息
-    std::atomic<uint64_t> ops_processed{0};
-    std::atomic<uint64_t> reads{0};
-    std::atomic<uint64_t> inserts{0};
-    std::atomic<uint64_t> updates{0};
-    std::atomic<uint64_t> deletes{0};
-
-    bool try_handoff(KVRequest* req);      // Synchronizer 调用
-    bool try_get_request(KVRequest*& req); // Worker 调用
-
-    bool owns_bucket(uint32_t bucket_id) const {
-        return (bucket_id % num_workers) == worker_id;
-    }
-};
-
-void worker_thread_func(KVWorker* worker, SharedHashTable* table,
-                        void* base, std::atomic<bool>& stop_flag) {
-    while (!stop_flag.load()) {
-        KVRequest* req = nullptr;
-
-        if (worker->try_get_request(req)) {
-            KVResponse resp;
-            resp.client_id = req->client_id;
-            resp.sequence_number = req->sequence_number;
-            resp.timestamp = req->timestamp;
-
-            // 执行 KV 操作
-            switch (req->op_type) {
-                case KVOpType::READ: {
-                    std::string result;
-                    bool found = kv_get(table, base, req->get_key(), result);
-                    resp.status = found ? SUCCESS : NOT_FOUND;
-                    if (found) resp.set_result(result);
-                    worker->reads++;
-                    break;
-                }
-                case KVOpType::INSERT:
-                case KVOpType::UPDATE: {
-                    kv_put(table, base, req->get_key(), req->get_value());
-                    resp.status = SUCCESS;
-                    worker->inserts++;
-                    break;
-                }
-                case KVOpType::DELETE: {
-                    bool deleted = kv_delete(table, base, req->get_key());
-                    resp.status = deleted ? SUCCESS : NOT_FOUND;
-                    worker->deletes++;
-                    break;
-                }
-            }
-
-            // 写 response 到正确的队列
-            while (!req->resp_q_ptr->enqueue(resp)) {
-                if (stop_flag.load()) break;
-                std::this_thread::yield();
-            }
-
-            req->cleanup();
-            delete req;
-            worker->ops_processed++;
-        } else {
-            std::this_thread::yield();
-        }
-    }
-}
-```
-
-### 4.5 Synchronizer 模块 (`kv_synchronizer.cpp`)
-
-```cpp
-void synchronizer_thread_func(
-    std::vector<ClientChannel*>& clients,
-    std::vector<KVWorker*>& workers,
-    std::atomic<bool>& stop_flag) {
-
-    size_t client_idx = 0;
-    std::atomic<uint64_t> global_seq{0};
-
-    while (!stop_flag.load()) {
-        // Round-robin 轮询所有客户端
-        for (size_t i = 0; i < clients.size(); ++i) {
-            KVRequest* req = nullptr;
-
-            if (clients[client_idx]->req_q->dequeue(req)) {
-                // 分配全局序列号
-                req->sequence_number = global_seq.fetch_add(1);
-                req->client_id = client_idx;
-                req->resp_q_ptr = clients[client_idx]->resp_q;
-
-                // 基于 key 的 hash 选择 worker
-                uint64_t h = hash_key(req->get_key());
-                uint32_t bucket_id = h % NUM_BUCKETS;
-                uint32_t worker_id = bucket_id % workers.size();
-
-                // 直接交付给 worker 的 ring buffer
-                if (!workers[worker_id]->try_handoff(req)) {
-                    // Ring buffer 满了，返回错误响应
-                    KVResponse err_resp;
-                    err_resp.status = ERROR;
-                    err_resp.client_id = req->client_id;
-                    clients[client_idx]->resp_q->enqueue(err_resp);
-                    delete req;
-                }
-            }
-
-            client_idx = (client_idx + 1) % clients.size();
-        }
-
-        std::this_thread::yield();
-    }
-}
+└── docs/
+    └── READ.ME              # 本文档
 ```
 
 ---
 
-## 5. 数据流与工作流程
+## 4. 编译与安装
 
-### 5.1 写操作流程 (INSERT/UPDATE)
+### 4.1 环境要求
 
-```
-Java Thread (client_id=5)
-    │
-    │ 1. nativeInsert("user123", "{field0:xxx,...}")
-    ▼
-┌───────────────────────────────────────┐
-│ JNI Layer (sharedkv_jni.cpp)          │
-│ • get_client_id() → 5                 │
-│ • 创建 KVRequest                       │
-│ • 设置 op_type = INSERT               │
-│ • 设置 key = "user123"                │
-│ • 设置 value = "{field0:xxx,...}"    │
-└───────────────┬───────────────────────┘
-                │ 2. ctx->submit_request(5, req, 5000)
-                ▼
-┌───────────────────────────────────────┐
-│ ClientChannel[5]                      │
-│ req_q->enqueue(req)                   │
-└───────────────┬───────────────────────┘
-                │ 3. Synchronizer 轮询
-                ▼
-┌───────────────────────────────────────┐
-│ Synchronizer Thread (CPU 0)           │
-│ • dequeue from req_q[5]               │
-│ • seq = global_seq++ → 42             │
-│ • req->client_id = 5                  │
-│ • req->resp_q_ptr = resp_q[5]         │
-│ • worker_id = hash("user123") % N     │
-│ • workers[worker_id]->try_handoff(req)│
-└───────────────┬───────────────────────┘
-                │ 4. 交付给 Worker 3
-                ▼
-┌───────────────────────────────────────┐
-│ Worker 3 Thread (CPU 5)               │
-│ • try_get_request(req)                │
-│ • kv_put(table, "user123", value)     │
-│   - hash → bucket_id = 3456           │
-│   - acquire bucket lock               │
-│   - allocate KVEntry                  │
-│   - insert to chain                   │
-│   - release lock                      │
-│ • 创建 KVResponse (status=SUCCESS)    │
-│ • req->resp_q_ptr->enqueue(resp)      │
-└───────────────┬───────────────────────┘
-                │ 5. 写到 resp_q[5]
-                ▼
-┌───────────────────────────────────────┐
-│ ClientChannel[5]                      │
-│ resp_q (有新响应)                      │
-└───────────────┬───────────────────────┘
-                │ 6. Poller 检测
-                ▼
-┌───────────────────────────────────────┐
-│ Poller Thread (CPU 1)                 │
-│ • detect empty→non-empty              │
-│ • response_ready[5] = true            │
-│ • (optional) _senduipi()              │
-└───────────────┬───────────────────────┘
-                │ 7. 唤醒 Java Thread
-                ▼
-┌───────────────────────────────────────┐
-│ Java Thread 5 (spinning/waiting)      │
-│ • resp_q->dequeue(resp)               │
-│ • return SUCCESS to YCSB              │
-└───────────────────────────────────────┘
-```
+- g++ (C++17)
+- CMake 3.10+
+- libnuma
+- Linux 内核 5.14+ (UINTR 支持)
 
-### 5.2 读操作流程 (READ)
-
-流程与写操作类似，主要区别在 Worker 执行的操作：
-- 调用 `kv_get()` 而非 `kv_put()`
-- 找到 entry 后复制 value 到 response
-- 状态为 `SUCCESS` 或 `NOT_FOUND`
-
-### 5.3 生命周期流程
-
-```
-JVM 启动
-    │
-    ▼
-Class Load → System.loadLibrary("sharedkv_jni")
-    │
-    ▼
-第一个 YCSB Thread
-    │
-    ▼
-init() → nativeInitThreaded(numa_node, num_clients, num_workers, ...)
-    │
-    ▼
-┌───────────────────────────────────────┐
-│ SharedKVContext 创建                   │
-│ • allocate_cxl_memory(16GB)           │
-│ • 初始化 SharedHashTable              │
-│ • 创建 N 个 ClientChannel             │
-│ • 创建 M 个 KVWorker                  │
-│ • 启动 Synchronizer 线程 (CPU 0)      │
-│ • 启动 Poller 线程 (CPU 1)            │
-│ • 启动 Worker 线程 (CPU 2+)           │
-└───────────────┬───────────────────────┘
-                │
-                ▼
-后续 YCSB Threads
-    │
-    ▼
-init() → 重用已有 SharedKVContext
-    │
-    ▼
-• 分配 thread-local client_id
-• Lazy-init response thread
-    │
-    ▼
-Benchmark/Load/Run phase
-    │
-    ▼
-Operations 通过队列流转
-    │
-    ▼
-Cleanup/Shutdown
-    │
-    ▼
-destroy_context() → 清理所有线程和内存
-```
-
----
-
-## 6. 编译与安装
-
-### 6.1 环境要求
-
-- **C++ 编译器**: g++ 支持 C++17
-- **Java Development Kit**: JDK 8 或更高版本
-- **CMake**: 3.10 或更高版本
-- **依赖库**: libnuma, libpthread
-- **Linux 内核**: 5.14+ (UINTR 支持)
-
-### 6.2 编译 Native 库
+### 4.2 编译
 
 ```bash
 cd ~/YCSB-YW/sharedkv/native
-
-# 创建 build 目录
-mkdir -p build && cd build
-
-# 配置 CMake（Release 模式获得最佳性能）
-cmake -DCMAKE_BUILD_TYPE=Release ..
-
-# 编译（使用所有 CPU 核心）
-make -j$(nproc)
-
-# 验证生成的库
-ls -lh lib/libsharedkv_jni.so
-```
-
-### 6.3 安装 Native 库
-
-**方法 1: 安装到系统目录（推荐）**
-```bash
-sudo cp lib/libsharedkv_jni.so /usr/lib/
-sudo ldconfig
-```
-
-**方法 2: 使用 LD_LIBRARY_PATH**
-```bash
-export LD_LIBRARY_PATH=~/YCSB-YW/sharedkv/native/build/lib:$LD_LIBRARY_PATH
-```
-
-### 6.4 编译 Java 包
-
-```bash
-cd ~/YCSB-YW
-
-# 清理并编译 SharedKV 绑定
-mvn clean package -pl sharedkv -am -DskipTests
-
-# 验证 JAR 文件
-ls -lh sharedkv/target/sharedkv-binding-0.18.0-SNAPSHOT.jar
-```
-
-### 6.5 编译 Native Benchmark
-
-```bash
-cd ~/YCSB-YW/sharedkv/native/benchmark
-
-# 编译
-./build.sh
+./scripts/build.sh
 
 # 验证
-ls -lh build/sharedkv_benchmark
+ls benchmark/build/sharedkv_benchmark
 ```
 
 ---
 
-## 7. 运行指南
+## 5. 运行指南
 
-### 7.1 准备 CXL 内存
-
-```bash
-# 检查 CXL 设备
-sudo daxctl list
-
-# 查看 NUMA 拓扑
-numactl --hardware
-
-# Online CXL 内存（如果需要）
-sudo daxctl online-memory dax1.0
-
-# 验证
-numactl --hardware | grep "node 3"
-# 应显示: node 3 size: 260096 MB
-```
-
-### 7.2 运行 Java YCSB 测试
+### 5.1 命令行格式
 
 ```bash
-export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
-export LD_LIBRARY_PATH=/usr/lib:$LD_LIBRARY_PATH
-cd ~/YCSB-YW
-
-# 构建 classpath
-CLASSPATH="core/target/core-0.18.0-SNAPSHOT.jar"
-CLASSPATH="$CLASSPATH:sharedkv/target/sharedkv-binding-0.18.0-SNAPSHOT.jar"
-for jar in core/core/lib/*.jar; do
-    CLASSPATH="$CLASSPATH:$jar"
-done
-
-# Load 阶段
-java -cp "$CLASSPATH" \
-    -Djava.library.path=/usr/lib \
-    site.ycsb.Client \
-    -load \
-    -db site.ycsb.db.sharedkv.SharedKVClient \
-    -P workloads/workloada \
-    -p sharedkv.threading=multi \
-    -p sharedkv.numa_node=3 \
-    -p sharedkv.num_clients=16 \
-    -p sharedkv.num_workers=16 \
-    -p recordcount=100000 \
-    -threads 16
-
-# Run 阶段
-java -cp "$CLASSPATH" \
-    -Djava.library.path=/usr/lib \
-    site.ycsb.Client \
-    -t \
-    -db site.ycsb.db.sharedkv.SharedKVClient \
-    -P workloads/workloada \
-    -p sharedkv.threading=multi \
-    -p sharedkv.numa_node=3 \
-    -p sharedkv.num_clients=16 \
-    -p sharedkv.num_workers=16 \
-    -p recordcount=100000 \
-    -p operationcount=500000 \
-    -threads 16
+./build/sharedkv_benchmark [OPTIONS]
 ```
 
-### 7.3 运行 Native Benchmark
+### 5.2 参数说明
 
-```bash
-cd ~/YCSB-YW/sharedkv/native/benchmark
-
-# 1. 生成 Workload
-./gen_workload.py -w c -r 100000 -o 1000000
-
-# 2. Throughput 模式（运行 30 秒）
-./run_benchmark.sh -w workloadc -c 32 -W 32 -t 30
-
-# 3. Latency 模式（测量延迟分布）
-./run_benchmark.sh -w workloadc -c 16 -W 16 --latency
-
-# 4. 异步模式（更高吞吐）
-./build/sharedkv_benchmark -w workloadc -c 16 -W 16 -t 30 -s 64 -a
-```
-
-### 7.4 使用测试脚本
-
-```bash
-cd ~/YCSB-YW/sharedkv/native/scripts
-
-# 完整 CXL 测试
-./test_sharedkv_cxl.sh
-
-# 简单测试（快速验证）
-./test_sharedkv_simple.sh
-
-# 性能测试
-./test_performance.sh
-
-# 线程模式对比
-./compare_threading_modes.sh
-```
-
----
-
-## 8. 配置参数
-
-### 8.1 YCSB 属性
-
-| 参数 | 默认值 | 说明 |
-|-----|-------|------|
-| `sharedkv.mode` | `cxl` | 存储模式：`cxl` 或 `pmem` |
-| `sharedkv.threading` | `single` | 线程模式：`single` 或 `multi` |
-| `sharedkv.numa_node` | `2` | CXL 内存的 NUMA 节点 |
-| `sharedkv.num_clients` | `16` | 客户端通道数量 |
-| `sharedkv.num_workers` | `8` | Worker 线程数量 |
-| `sharedkv.queue_depth` | `4096` | 每个客户端队列深度 |
-| `sharedkv.ring_buffer_size` | `1024` | Worker ring buffer 大小 |
-| `sharedkv.device` | `/dev/pmem0` | PMem 设备路径（PMem 模式） |
-
-### 8.2 Benchmark 参数
-
+**必需参数**：
 | 参数 | 说明 |
-|-----|------|
+|------|------|
 | `-w <workload>` | Workload 名称 (workloada/b/c) |
-| `-n <numa>` | NUMA 节点号 |
-| `-c <clients>` | Client 线程数 |
-| `-W <workers>` | Worker 线程数 |
-| `-t <seconds>` | Throughput 模式运行时长 |
-| `-l` | Latency 模式 |
-| `-o <ops>` | Latency 模式操作数 |
-| `-s <cpu>` | Client 线程起始 CPU |
-| `-a` | 异步模式 |
 
-### 8.3 推荐配置
+**架构参数**：
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `-req_q <n>` | 8 | 请求队列数量 |
+| `-resp_q <n>` | 8 | 响应队列数量 |
+| `-req_th <n>` | 8 | 请求线程数量 |
+| `-resp_th <n>` | 8 | 响应线程数量 |
+| `-worker_th <n>` | 8 | Worker 线程数量 |
 
-| 场景 | Threads | Clients | Workers | Queue Depth | Ring Buffer |
-|-----|---------|---------|---------|-------------|-------------|
-| 快速验证 | 4 | 4 | 2 | 1024 | 256 |
-| 开发调试 | 8 | 8 | 8 | 2048 | 512 |
-| 生产环境(小) | 16 | 16 | 16 | 4096 | 1024 |
-| 生产环境(中) | 32 | 32 | 32 | 8192 | 2048 |
-| 生产环境(大) | 64 | 64 | 64 | 16384 | 4096 |
+**其他参数**：
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `-n <numa>` | 2 | NUMA 节点 |
+| `-t <seconds>` | 10 | 运行时长 |
+| `-s <cpu>` | 64 | 起始 CPU |
+| `-a` | 否 | 异步模式 |
+| `-l` | 否 | 延迟测量模式 |
+| `-o <ops>` | 10000 | 延迟模式操作数 |
 
-### 8.4 配置规则
+### 5.3 运行示例
 
-**黄金法则**:
+```bash
+cd ~/YCSB-YW/sharedkv/native/benchmark
+
+# 基本运行 (默认 8x8x8x8x8 配置)
+./build/sharedkv_benchmark -w workloadc -n 2 -t 5 -s 64 -a
+
+# 自定义配置: 4 queues, 8 threads, 8 workers
+./build/sharedkv_benchmark -w workloadc -n 2 -t 5 -s 64 -a \
+    -req_q 4 -resp_q 4 -req_th 8 -resp_th 4 -worker_th 8
+
+# 延迟测量
+./build/sharedkv_benchmark -w workloadc -n 2 -s 64 -a -l -o 100000
 ```
-num_clients >= num_threads (必须)
-num_clients <= num_threads * 1.5 (推荐)
-```
 
-**内存占用估算**:
-```
-每个 ClientChannel:
-  req_q:  queue_depth × 8 bytes = 32 KB (默认)
-  resp_q: queue_depth × 128 bytes = 512 KB (默认)
+### 5.4 输出示例
 
-16 clients × 544 KB = ~8.5 MB
+```
+==============================================
+SharedKV Native YCSB Benchmark
+==============================================
+Configuration:
+  Workload:         workloadc
+  NUMA node:        2
+  CPU start:        64
+  Architecture:     Async
+  Request queues:   8
+  Response queues:  8
+  Request threads:  8
+  Response threads: 8
+  Worker threads:   8
+  Queue depth:      2048
+  Mode:             Throughput measurement
+  Duration:         5 seconds
+==============================================
+
+[Benchmark] Starting LOAD PHASE...
+...
+==============================================
+LOAD PHASE Results:
+==============================================
+Total operations:      100000
+Successful operations: 100000
+Throughput:            626688.14 ops/sec
+==============================================
+
+[Benchmark] Starting TRANSACTION PHASE...
+...
+==============================================
+TRANSACTION PHASE Results:
+==============================================
+Total operations:      14544242
+Successful operations: 14544242
+Throughput:            2908848.40 ops/sec
+==============================================
 ```
 
 ---
 
-## 9. 调试指南
+## 6. 配置参数
 
-### 9.1 启用调试日志
+### 6.1 推荐配置
 
-```bash
-# 运行时查看调试输出
-java ... 2>&1 | tee debug.log
+| 场景 | req_q | resp_q | req_th | resp_th | worker_th |
+|------|-------|--------|--------|---------|-----------|
+| 快速验证 | 4 | 4 | 4 | 4 | 4 |
+| 标准测试 | 8 | 8 | 8 | 8 | 8 |
+| 高吞吐 | 8 | 8 | 16 | 16 | 16 |
+| 低延迟 | 4 | 4 | 4 | 4 | 8 |
 
-# 关键日志标记
-grep -E "\[JNI\]|\[SharedKVContext\]|\[KVWorker\]|\[Synchronizer\]|\[Poller\]" debug.log
-```
+### 6.2 配置规则
 
-### 9.2 常见问题排查
+1. **队列数量 ≤ 线程数量**
+   - `num_req_queues ≤ num_req_threads`
+   - `num_resp_queues ≤ num_resp_threads`
 
-#### 问题 1: mbind 失败
+2. **多线程共享队列**
+   - 当 threads > queues 时，多个线程共享同一队列
+   - 例如: 8 threads, 4 queues → 每个队列 2 个线程
 
-**错误**: `mbind failed: Invalid argument`
-
-**原因**: NUMA 节点不存在或内存未 online
-
-**解决**:
-```bash
-# 检查 NUMA 拓扑
-numactl --hardware
-
-# 检查 DAX 设备
-sudo daxctl list
-
-# Online 内存
-sudo daxctl online-memory dax1.0
-
-# 验证
-numactl --hardware | grep "node 3"
-```
-
-#### 问题 2: 找不到 JNI 库
-
-**错误**: `java.lang.UnsatisfiedLinkError: no sharedkv_jni in java.library.path`
-
-**解决**:
-```bash
-# 方案 1: 安装到系统目录
-sudo cp libsharedkv_jni.so /usr/lib/
-
-# 方案 2: 设置环境变量
-export LD_LIBRARY_PATH=/path/to/lib:$LD_LIBRARY_PATH
-
-# 验证
-ldd /usr/lib/libsharedkv_jni.so
-```
-
-#### 问题 3: ClassNotFoundException for htrace
-
-**错误**: `java.lang.ClassNotFoundException: org.apache.htrace.core.Tracer$Builder`
-
-**解决**:
-```bash
-# 确保使用正确的 lib 路径
-for jar in core/core/lib/*.jar; do
-    CLASSPATH="$CLASSPATH:$jar"
-done
-```
-
-#### 问题 4: 性能低于预期
-
-**诊断步骤**:
-```bash
-# 1. 检查 NUMA 绑定
-numastat -c java
-
-# 2. 检查 CPU 频率
-cat /sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq | head -10
-
-# 3. 检查线程分布
-ps -eLo pid,tid,psr,comm | grep java | head -20
-
-# 4. 使用 perf 分析
-sudo perf stat -e cache-misses,cache-references,instructions,cycles java ...
-```
-
-#### 问题 5: Threads > Clients 导致响应混乱
-
-**症状**: YCSB 返回错误的 value 或超时
-
-**原因**: 多个 Java 线程共享同一个 ClientChannel
-
-**解决**:
-```bash
-# 确保 num_clients >= threads
--p sharedkv.num_clients=32 -threads 16  # OK
--p sharedkv.num_clients=16 -threads 32  # 错误！
-```
-
-### 9.3 性能分析命令
-
-```bash
-# 监控 NUMA 内存访问
-numastat -c java
-
-# 查看线程 CPU 分布
-ps -eLo pid,tid,psr,comm | grep java
-
-# 内存映射
-pmap -x $(pgrep java) | grep -E "16[0-9]{9}"
-
-# perf 性能计数器
-sudo perf stat -e cache-misses,cache-references,instructions,cycles java ...
-
-# CPU 监控
-mpstat -P ALL 1
-```
-
-### 9.4 验证检查点
-
-**编译阶段**:
-- [ ] CMake 配置成功，无错误
-- [ ] Native 库编译成功 (libsharedkv_jni.so)
-- [ ] Java 包编译成功 (sharedkv-binding-*.jar)
-- [ ] 库依赖检查通过 (ldd 无未找到的依赖)
-
-**环境阶段**:
-- [ ] CXL 设备存在 (daxctl list)
-- [ ] NUMA node 可用且有足够内存
-- [ ] 内存已 online (online_memblocks > 0)
-
-**运行阶段**:
-- [ ] 初始化成功，看到 "All threads started successfully"
-- [ ] Client ID 自动分配正常
-- [ ] Load phase 成功完成，100% 成功率
-- [ ] Run phase 成功完成，无 ERROR
+3. **Worker 数量独立**
+   - Worker 数量与队列/线程数量无关
+   - 建议 Worker 数量 ≥ CPU 核心数的 50%
 
 ---
 
-## 10. 性能调优
+## 7. 调试指南
 
-### 10.1 最大化吞吐量
+### 7.1 查看帮助
 
-1. **匹配线程数和核心数**
-   ```bash
-   # 检查核心数
-   lscpu | grep "Core(s) per socket"
-
-   # 使用所有核心
-   -p sharedkv.num_clients=32 -p sharedkv.num_workers=32 -threads 32
-   ```
-
-2. **NUMA 感知**
-   ```bash
-   # 使用正确的 NUMA 节点
-   -p sharedkv.numa_node=3  # CXL memory
-   ```
-
-3. **CPU 隔离**
-   ```bash
-   # 确保 CPUs 未被其他进程使用
-   taskset -c 64-95 java ...
-   ```
-
-4. **增大 Ring Buffer**
-   ```bash
-   -p sharedkv.ring_buffer_size=2048  # 默认 1024
-   ```
-
-### 10.2 最小化延迟
-
-1. **减少线程数**
-   ```bash
-   -p sharedkv.num_clients=4 -p sharedkv.num_workers=8 -threads 4
-   ```
-
-2. **小队列深度**
-   ```bash
-   -p sharedkv.queue_depth=1024  # 减少轮询开销
-   ```
-
-3. **预热缓存**
-   ```bash
-   # 先运行 throughput 测试预热
-   ./run_benchmark.sh -t 10
-   # 再测量 latency
-   ./run_benchmark.sh --latency
-   ```
-
-### 10.3 性能对比基准
-
-| 配置 | 吞吐量 | READ 延迟 | UPDATE 延迟 |
-|-----|-------|----------|-------------|
-| Ring Buffer 16 | ~15K ops/sec | ~1000 μs | ~1000 μs |
-| Ring Buffer 1024 | **500K ops/sec** | **15 μs** | **23 μs** |
-| 提升倍数 | **33.4x** | **66x** | **44x** |
-
----
-
-## 11. 常见问题
-
-### Q1: SharedKV 与传统数据库绑定（Redis、MongoDB）有什么区别？
-
-**A**: 主要区别在于执行模型：
-
-| 方面 | 传统绑定 (Redis/MongoDB) | SharedKV |
-|-----|-------------------------|----------|
-| Java 线程角色 | 执行完整 DB 操作 | 提交请求 + 等待响应 |
-| 实际执行者 | Java 线程自身（通过客户端库） | 专用 Worker 线程 (C++) |
-| 阻塞位置 | 网络 I/O (TCP socket) | Lock-free 队列（共享内存） |
-| 延迟量级 | 毫秒 (~1-10ms) | 微秒 (~10-100μs) |
-
-### Q2: 如何选择 num_clients 和 num_workers？
-
-**A**:
-- `num_clients >= num_threads`（必须）
-- `num_workers` 建议为 CPU 核心数的 50-75%
-- 对于高吞吐场景，增大 `num_clients` 和 `num_workers`
-- 对于低延迟场景，减少线程数
-
-### Q3: 为什么 Load Phase 的延迟比 Run Phase 高？
-
-**A**: Load Phase（INSERT）需要：
-- CXL 内存首次分配和初始化
-- Hash table 从空到满的扩展
-- 冷启动效应（缓存未热）
-
-### Q4: Native Benchmark 和 Java YCSB 应该使用哪个？
-
-**A**:
-- **Native Benchmark**: 测量 SharedKV 的理论最大性能
-- **Java YCSB**: 公平对比其他数据库（Redis、MongoDB 等）
-
-建议两者都使用：Native Benchmark 用于性能调试和优化验证，Java YCSB 用于与其他系统的横向对比。
-
-### Q5: 如何处理内存不足？
-
-**A**:
 ```bash
-# 检查内存使用
-free -h
-numastat -c java
+./build/sharedkv_benchmark -h
+```
 
-# 减少配置
--p sharedkv.num_clients=8   # 减少客户端数
--p sharedkv.queue_depth=2048  # 减少队列深度
+### 7.2 常见问题
+
+**问题: 吞吐量很低**
+```
+原因: handoff_retries 很高，Worker ring buffer 满
+解决: 减少 req_threads 或增加 workers
+```
+
+**问题: resp_q_waits 很高**
+```
+原因: Response queue 满
+解决: 增加 resp_queue_depth 或 resp_threads
+```
+
+### 7.3 关键日志
+
+```bash
+# 查看 Synchronizer 统计
+grep "Synchronizer" output.log
+
+# 查看 Worker 统计
+grep "Worker" output.log
+
+# 查看队列状态
+grep "req_q\|resp_q" output.log
 ```
 
 ---
 
-## 12. API 参考
+## 8. 性能调优
 
-### 12.1 Java API (SharedKVClient)
-
-```java
-public class SharedKVClient extends DB {
-    // 初始化
-    public void init() throws DBException;
-
-    // 读操作
-    public Status read(String table, String key,
-                       Set<String> fields,
-                       Map<String, ByteIterator> result);
-
-    // 插入操作
-    public Status insert(String table, String key,
-                         Map<String, ByteIterator> values);
-
-    // 更新操作
-    public Status update(String table, String key,
-                         Map<String, ByteIterator> values);
-
-    // 删除操作
-    public Status delete(String table, String key);
-
-    // 清理
-    public void cleanup() throws DBException;
-}
-```
-
-### 12.2 C++ API (SharedKVContext)
-
-```cpp
-class SharedKVContext {
-public:
-    // 构造函数
-    SharedKVContext(uint32_t num_clients,
-                    uint32_t num_workers,
-                    int numa_node,
-                    size_t queue_depth = 4096,
-                    size_t ring_buffer_size = 1024);
-
-    // 提交请求并等待响应
-    KVResponse submit_request(uint32_t client_id,
-                              KVRequest* req,
-                              uint64_t timeout_ms);
-
-    // 获取统计信息
-    void get_stats(Stats& stats);
-
-    // 析构
-    ~SharedKVContext();
-};
-```
-
-### 12.3 底层 KV 操作 API
-
-```cpp
-// 插入/更新键值对
-int kv_put(SharedHashTable* ht, void* base,
-           const std::string& key, const std::string& value);
-
-// 读取键值对
-int kv_get(SharedHashTable* ht, void* base,
-           const std::string& key, std::string& value);
-
-// 删除键值对
-int kv_delete(SharedHashTable* ht, void* base,
-              const std::string& key);
-```
-
----
-
-## 附录 A: 快速命令速查表
+### 8.1 最大化吞吐量
 
 ```bash
-# === 环境检查 ===
-sudo daxctl list && numactl --hardware | grep node
-
-# === Online CXL 内存 ===
-sudo daxctl online-memory dax1.0
-
-# === 重新编译 ===
-cd ~/YCSB-YW/sharedkv/native/build && make -j$(nproc) && sudo cp lib/*.so /usr/lib/
-
-# === 编译 Java ===
-cd ~/YCSB-YW && mvn clean package -pl sharedkv -am -DskipTests
-
-# === 运行测试 ===
-./native/scripts/test_sharedkv_cxl.sh
-
-# === 运行 Native Benchmark ===
-cd native/benchmark && ./gen_workload.py -w c -r 100000 -o 1000000
-./run_benchmark.sh -w workloadc -c 32 -W 32 -t 30
-
-# === 查看结果 ===
-grep "Throughput" /tmp/sharedkv_*.log
-grep -E "READ.*Latency|UPDATE.*Latency" /tmp/sharedkv_run.log
-
-# === 调试命令 ===
-ldd /usr/lib/libsharedkv_jni.so
-ps -eLf | grep java | wc -l
-watch -n1 'numastat -c java'
+# 增加并行度
+./build/sharedkv_benchmark -w workloadc -n 2 -t 30 -s 64 -a \
+    -req_q 16 -resp_q 16 -req_th 16 -resp_th 16 -worker_th 16
 ```
 
----
+### 8.2 最小化延迟
 
-## 附录 B: 相关文档索引
+```bash
+# 减少竞争
+./build/sharedkv_benchmark -w workloadc -n 2 -s 64 -a -l \
+    -req_q 4 -resp_q 4 -req_th 4 -resp_th 4 -worker_th 8
+```
 
-| 文档 | 描述 |
-|-----|------|
-| [README.md](README.md) | 基础介绍 |
-| [README_MULTITHREAD.md](README_MULTITHREAD.md) | 多线程架构详解 |
-| [ARCHITECTURE_zh.md](ARCHITECTURE_zh.md) | 架构详解（中文） |
-| [CONFIGURABLE_PARAMETERS.md](CONFIGURABLE_PARAMETERS.md) | 可配置参数说明 |
-| [CLIENT_THREAD_MAPPING.md](CLIENT_THREAD_MAPPING.md) | Client-Thread 映射机制 |
-| [REQUEST_RESPONSE_FLOW.md](REQUEST_RESPONSE_FLOW.md) | 请求响应流程 |
-| [PERFORMANCE_IMPROVEMENT.md](PERFORMANCE_IMPROVEMENT.md) | 性能优化报告 |
-| [COMPLETE_TESTING_SUMMARY.md](COMPLETE_TESTING_SUMMARY.md) | 完整测试总结 |
-| [SharedKV_MultiThreaded_Testing_Guide.md](SharedKV_MultiThreaded_Testing_Guide.md) | 多线程测试指南 |
-| [benchmark/README.md](../benchmark/README.md) | Native Benchmark 说明 |
-| [benchmark/ARCHITECTURE.md](../benchmark/ARCHITECTURE.md) | Benchmark 架构 |
-| [benchmark/GETTING_STARTED.md](../benchmark/GETTING_STARTED.md) | Benchmark 快速入门 |
+### 8.3 性能指标
+
+| 指标 | 含义 | 理想值 |
+|------|------|--------|
+| `handoff_retries` | Worker ring buffer 满的次数 | 0 |
+| `empty_polls` | 空轮询次数 | 低 |
+| `resp_q_waits` | Response queue 满的等待 | 0 |
 
 ---
 
 ## 版本历史
 
 | 版本 | 日期 | 描述 |
-|-----|------|------|
-| 1.0 | - | 初始版本，单线程模式 |
+|------|------|------|
+| 3.0 | 2026-01-21 | 简化架构，移除 ClientChannel，新命令行参数 |
+| 2.1 | 2026-01-15 | Ring Buffer 优化 |
 | 2.0 | 2026-01-07 | 多线程架构，UINTR 支持 |
-| 2.1 | 2026-01-15 | Ring Buffer 优化（33.4x 性能提升） |
 
 ---
 
-**文档版本**: 2.1
-**最后更新**: 2026-01-15
-**作者**: SharedKV Team
+**文档版本**: 3.0
+**最后更新**: 2026-01-21

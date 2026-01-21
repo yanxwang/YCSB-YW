@@ -30,21 +30,22 @@ static void uintr_empty_handler(struct __uintr_frame* frame, unsigned long long 
 }
 
 // ============================================================================
-// Request Thread Implementation
+// Request Thread Implementation (simplified - no ClientChannel)
 // ============================================================================
 
 void* async_request_thread_func(void* arg) {
     AsyncBenchmarkContext* ctx = (AsyncBenchmarkContext*)arg;
-    ClientChannel* ch = ctx->kv_ctx->clients[ctx->client_id];
     RequestPool* pool = ctx->request_pool;
     std::vector<uint32_t>& precomputed_worker_ids = *ctx->precomputed_worker_ids;
+
+    // Get queue pointers directly (thread_id % num_queues mapping)
+    LockFreeQueue<KVRequest*>* req_q = ctx->kv_ctx->get_req_queue(ctx->client_id);
+    LockFreeQueue<KVResponse>* resp_q = ctx->kv_ctx->get_resp_queue(ctx->client_id);
 
     // Pin to dedicated CPU
     pin_current_thread_to_cpu(ctx->request_cpu);
     printf("[AsyncReq-%u] Pinned to CPU %d, pool capacity=%u\n",
            ctx->client_id, ctx->request_cpu, pool->capacity);
-    fprintf(stderr, "[AsyncReq-%u] Setting resp_q_ptr to ch->resp_q=%p (client %u)\n",
-            ctx->client_id, (void*)ch->resp_q, ctx->client_id);
 
     // Wait for all threads to be ready
     pthread_barrier_wait(ctx->start_barrier);
@@ -73,7 +74,7 @@ void* async_request_thread_func(void* arg) {
 
         // Initialize request (minimal work in hot path)
         req->client_id = ctx->client_id;
-        req->resp_q_ptr = ch->resp_q;
+        req->resp_q_ptr = resp_q;
         req->target_worker_id = precomputed_worker_ids[local_idx];
 
         // Only record timestamp if measuring latency (reduces overhead)
@@ -94,7 +95,7 @@ void* async_request_thread_func(void* arg) {
         }
 
         // Enqueue to request queue (busy-spin if full)
-        while (!ch->req_q->enqueue(req)) {
+        while (!req_q->enqueue(req)) {
             enqueue_wait_count++;
             if (*(ctx->should_stop) || ctx->kv_ctx->stop_flag.load(std::memory_order_relaxed)) {
                 pool->free(req);
@@ -121,11 +122,15 @@ done:
 }
 
 // ============================================================================
-// Response Thread Implementation
+// Response Thread Implementation (simplified - no ClientChannel)
 // ============================================================================
 
 void* async_response_thread_func(void* arg) {
     AsyncBenchmarkContext* ctx = (AsyncBenchmarkContext*)arg;
+
+    // Get queue pointers directly
+    ResponseQueue* resp_queue = ctx->kv_ctx->get_resp_queue_obj(ctx->client_id);
+    LockFreeQueue<KVResponse>* resp_q = resp_queue->queue;
 
     // Pin to dedicated CPU
     pin_current_thread_to_cpu(ctx->response_cpu);
@@ -148,14 +153,11 @@ void* async_response_thread_func(void* arg) {
     }
     ctx->uintr_fd_ready.store(true, std::memory_order_release);
 
-    // IMPORTANT: Register uintr_fd with ClientChannel so Poller can find it
-    ClientChannel* ch = ctx->kv_ctx->clients[ctx->client_id];
-    ch->uintr_fd = ctx->uintr_fd;
-    ch->uintr_fd_ready.store(true, std::memory_order_release);
+    // IMPORTANT: Register uintr_fd with ResponseQueue so Poller can find it
+    resp_queue->uintr_fd = ctx->uintr_fd;
+    resp_queue->uintr_fd_ready.store(true, std::memory_order_release);
 
     printf("[AsyncResp-%u] UINTR fd created: %d\n", ctx->client_id, ctx->uintr_fd);
-    fprintf(stderr, "[AsyncResp-%u] Polling resp_q=%p (client %u)\n",
-            ctx->client_id, (void*)ch->resp_q, ctx->client_id);
 
     // Wait for all threads to be ready
     pthread_barrier_wait(ctx->start_barrier);
@@ -163,19 +165,18 @@ void* async_response_thread_func(void* arg) {
     uint64_t total_drained = 0;
     uint64_t poll_count = 0;
     uint64_t empty_count = 0;
-    uint64_t yield_count = 0;           // How many times we yielded
-    uint64_t latency_calc_count = 0;    // How many times we calculated latency
-    uint64_t atomic_update_count = 0;   // How many atomic updates
-    uint64_t mutex_lock_count = 0;      // How many mutex locks
+    uint64_t yield_count = 0;
+    uint64_t latency_calc_count = 0;
+    uint64_t atomic_update_count = 0;
+    uint64_t mutex_lock_count = 0;
 
-    // Simple polling loop - directly poll resp_q like sync mode does
-    // This avoids the complexity and overhead of edge-triggered detection
+    // Simple polling loop
     while (true) {
         KVResponse resp;
         poll_count++;
 
         // Try to dequeue a response
-        if (ch->resp_q->dequeue(resp)) {
+        if (resp_q->dequeue(resp)) {
             total_drained++;
 
             // Calculate latency
@@ -203,15 +204,11 @@ void* async_response_thread_func(void* arg) {
         } else {
             empty_count++;
             // Queue is empty - check if we should stop
-            // Exit conditions: should_stop=true AND queue is empty
-            // This ensures we process all pending responses before exiting
             if (*(ctx->should_stop)) {
-                // Final check - if truly empty after stop signal, exit
-                if (ch->resp_q->is_empty()) {
+                if (resp_q->is_empty()) {
                     break;
                 }
             }
-            // Brief yield to avoid 100% CPU
             yield_count++;
             std::this_thread::yield();
         }
@@ -223,7 +220,7 @@ void* async_response_thread_func(void* arg) {
     fprintf(stderr, "[AsyncResp-%u] PERF: yields=%lu, latency_calcs=%lu, atomic_updates=%lu, mutex_locks=%lu\n",
             ctx->client_id, yield_count, latency_calc_count, atomic_update_count, mutex_lock_count);
     fprintf(stderr, "[AsyncResp-%u] Final resp_q state: head=%lu, tail=%lu, size=%zu\n",
-            ctx->client_id, ch->resp_q->head.load(), ch->resp_q->tail.load(), ch->resp_q->get_size());
+            ctx->client_id, resp_q->head.load(), resp_q->tail.load(), resp_q->get_size());
     printf("[AsyncResp-%u] Received %lu responses (%lu failed), drained=%lu\n",
            ctx->client_id,
            ctx->responses_received.load(),
@@ -235,13 +232,13 @@ void* async_response_thread_func(void* arg) {
 }
 
 // ============================================================================
-// Async Benchmark Runner
+// Async Benchmark Runner (simplified - no ClientChannel)
 // ============================================================================
 
 void run_async_transaction_phase(
     SharedKVContext* kv_ctx,
     std::vector<YCSBOperation>& operations,
-    uint32_t num_clients,
+    uint32_t num_threads,
     uint32_t duration_sec,
     int cpu_start,
     bool measure_latency,
@@ -250,88 +247,82 @@ void run_async_transaction_phase(
     std::vector<uint64_t>* all_latencies_out)
 {
     printf("\n[AsyncBench] Starting async transaction phase...\n");
-    printf("[AsyncBench] %u client pairs, %u seconds\n", num_clients, duration_sec);
+    printf("[AsyncBench] %u threads, %u seconds\n", num_threads, duration_sec);
     printf("[AsyncBench] Request threads: CPU %d-%d\n",
-           cpu_start, cpu_start + num_clients - 1);
+           cpu_start, cpu_start + num_threads - 1);
     printf("[AsyncBench] Response threads: CPU %d-%d\n",
-           cpu_start + num_clients, cpu_start + 2 * num_clients - 1);
+           cpu_start + num_threads, cpu_start + 2 * num_threads - 1);
 
-    // CRITICAL: Reset ClientChannel uintr state for new phase
-    // This ensures Poller will re-register with new uintr_fds
-    for (uint32_t i = 0; i < num_clients; i++) {
-        kv_ctx->clients[i]->uintr_fd = -1;
-        kv_ctx->clients[i]->uintr_fd_ready.store(false, std::memory_order_release);
-        kv_ctx->clients[i]->response_ready.store(false, std::memory_order_release);
+    // CRITICAL: Reset ResponseQueue uintr state for new phase
+    for (auto* rq : kv_ctx->resp_queues) {
+        rq->uintr_fd = -1;
+        rq->uintr_fd_ready.store(false, std::memory_order_release);
     }
 
     // CRITICAL: Drain any leftover requests/responses from previous phase
-    // This prevents queue full issues when starting a new phase
     printf("[AsyncBench] Draining leftover data from previous phase...\n");
-    for (uint32_t i = 0; i < num_clients; i++) {
-        // Drain response queue (consume all pending responses)
+    for (auto* rq : kv_ctx->resp_queues) {
         KVResponse resp;
         int drained_resp = 0;
-        while (kv_ctx->clients[i]->resp_q->dequeue(resp)) {
+        while (rq->queue->dequeue(resp)) {
             drained_resp++;
         }
         if (drained_resp > 0) {
-            printf("[AsyncBench] Drained %d leftover responses from client %u\n", drained_resp, i);
+            printf("[AsyncBench] Drained %d leftover responses from resp_q %u\n",
+                   drained_resp, rq->queue_id);
         }
     }
 
     // Create barrier for thread synchronization
     pthread_barrier_t start_barrier;
-    pthread_barrier_init(&start_barrier, NULL, 2 * num_clients);  // Request + Response threads
+    pthread_barrier_init(&start_barrier, NULL, 2 * num_threads);  // Request + Response threads
 
     // Create async contexts
-    std::vector<AsyncBenchmarkContext> contexts(num_clients);
+    std::vector<AsyncBenchmarkContext> contexts(num_threads);
     volatile bool should_stop = false;
 
-    uint32_t ops_per_client = operations.size() / num_clients;
+    uint32_t ops_per_thread = operations.size() / num_threads;
 
-    // Pre-compute worker IDs for all operations (done ONCE before benchmark starts)
-    // This is a MAJOR optimization - no hash computation during the benchmark
+    // Pre-compute worker IDs for all operations
     printf("[AsyncBench] Pre-computing worker IDs for %zu operations...\n", operations.size());
-    std::vector<std::vector<uint32_t>> all_precomputed_worker_ids(num_clients);
-    for (uint32_t c = 0; c < num_clients; c++) {
-        uint32_t start_idx = c * ops_per_client;
-        uint32_t count = (c == num_clients - 1) ?
-                         (operations.size() - c * ops_per_client) : ops_per_client;
+    std::vector<std::vector<uint32_t>> all_precomputed_worker_ids(num_threads);
+    for (uint32_t c = 0; c < num_threads; c++) {
+        uint32_t start_idx = c * ops_per_thread;
+        uint32_t count = (c == num_threads - 1) ?
+                         (operations.size() - c * ops_per_thread) : ops_per_thread;
 
         all_precomputed_worker_ids[c].reserve(count);
         for (uint32_t i = start_idx; i < start_idx + count; i++) {
             uint64_t hash = std::hash<std::string>{}(operations[i].key);
             uint32_t bucket_id = hash % NUM_BUCKETS;
-            all_precomputed_worker_ids[c].push_back(bucket_id % kv_ctx->num_workers);
+            all_precomputed_worker_ids[c].push_back(bucket_id % kv_ctx->config.num_workers);
         }
     }
     printf("[AsyncBench] Pre-computation done\n");
 
-    // Create object pools (one per client, sized for max in-flight)
-    // Pool size should be at least 2x the queue depth for flow control
-    const uint32_t pool_capacity = 8192;  // Large enough for high throughput
-    std::vector<RequestPool*> pools(num_clients);
-    for (uint32_t i = 0; i < num_clients; i++) {
+    // Create object pools (one per thread, sized for max in-flight)
+    const uint32_t pool_capacity = 8192;
+    std::vector<RequestPool*> pools(num_threads);
+    for (uint32_t i = 0; i < num_threads; i++) {
         pools[i] = new RequestPool(pool_capacity);
-        // Initialize recycle function for all pre-allocated requests
         for (uint32_t j = 0; j < pool_capacity; j++) {
             pools[i]->requests[j].recycle_func = request_pool_recycle;
             pools[i]->requests[j].recycle_ctx = pools[i];
         }
     }
-    printf("[AsyncBench] Created %u request pools with capacity %u each\n", num_clients, pool_capacity);
+    printf("[AsyncBench] Created %u request pools with capacity %u each\n", num_threads, pool_capacity);
 
-    for (uint32_t i = 0; i < num_clients; i++) {
+    for (uint32_t i = 0; i < num_threads; i++) {
         contexts[i].client_id = i;
-        contexts[i].num_clients = num_clients;
+        contexts[i].num_clients = num_threads;
         contexts[i].request_cpu = cpu_start + i;
-        contexts[i].response_cpu = cpu_start + num_clients + i;
+        contexts[i].response_cpu = cpu_start + num_threads + i;
         contexts[i].kv_ctx = kv_ctx;
         contexts[i].operations = &operations;
-        contexts[i].ops_start_idx = i * ops_per_client;
-        contexts[i].ops_count = (i == num_clients - 1) ?
-                                (operations.size() - i * ops_per_client) : ops_per_client;
-        contexts[i].max_in_flight = 2048;  // Flow control limit
+        contexts[i].ops_start_idx = i * ops_per_thread;
+        contexts[i].ops_count = (i == num_threads - 1) ?
+                                (operations.size() - i * ops_per_thread) : ops_per_thread;
+        contexts[i].max_in_flight = 2048;
         contexts[i].request_pool = pools[i];
         contexts[i].precomputed_worker_ids = &all_precomputed_worker_ids[i];
         contexts[i].measure_latency = measure_latency;
@@ -340,19 +331,19 @@ void run_async_transaction_phase(
         contexts[i].uintr_fd = -1;
 
         if (measure_latency) {
-            contexts[i].latencies.reserve(100000);  // Pre-allocate
+            contexts[i].latencies.reserve(100000);
             pthread_mutex_init(&contexts[i].latency_mutex, NULL);
         }
     }
 
     // Start response threads first (they need to set up UINTR fds)
-    for (uint32_t i = 0; i < num_clients; i++) {
+    for (uint32_t i = 0; i < num_threads; i++) {
         pthread_create(&contexts[i].response_thread, NULL,
                       async_response_thread_func, &contexts[i]);
     }
 
     // Wait for all response threads to set up UINTR fds
-    for (uint32_t i = 0; i < num_clients; i++) {
+    for (uint32_t i = 0; i < num_threads; i++) {
         while (!contexts[i].uintr_fd_ready.load(std::memory_order_acquire)) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
@@ -360,14 +351,8 @@ void run_async_transaction_phase(
 
     printf("[AsyncBench] All response threads ready\n");
 
-    // Update Poller with new UINTR fds (if Poller supports it)
-    // Note: This assumes Poller can dynamically pick up the uintr_fd from ClientChannel
-    for (uint32_t i = 0; i < num_clients; i++) {
-        kv_ctx->clients[i]->uintr_fd = contexts[i].uintr_fd;
-    }
-
     // Start request threads
-    for (uint32_t i = 0; i < num_clients; i++) {
+    for (uint32_t i = 0; i < num_threads; i++) {
         pthread_create(&contexts[i].request_thread, NULL,
                       async_request_thread_func, &contexts[i]);
     }
@@ -375,7 +360,6 @@ void run_async_transaction_phase(
     printf("[AsyncBench] All threads started, running for %u seconds...\n", duration_sec);
 
     // Wait for specified duration
-    uint64_t start_time = get_time_usec();
     sleep(duration_sec);
 
     // Phase 1: Stop request threads from submitting new requests
@@ -383,18 +367,17 @@ void run_async_transaction_phase(
     printf("[AsyncBench] Signaled request threads to stop...\n");
 
     // Phase 2: Wait for request threads to finish
-    for (uint32_t i = 0; i < num_clients; i++) {
+    for (uint32_t i = 0; i < num_threads; i++) {
         pthread_join(contexts[i].request_thread, NULL);
     }
     printf("[AsyncBench] Request threads joined\n");
 
     // Phase 3: Wait for all pending requests to be processed
-    // Wait until req_q is empty (all requests dispatched to workers)
     printf("[AsyncBench] Waiting for pipeline to drain...\n");
-    for (int wait = 0; wait < 50; wait++) {  // Up to 5 seconds
+    for (int wait = 0; wait < 50; wait++) {
         bool all_empty = true;
-        for (uint32_t i = 0; i < num_clients; i++) {
-            if (!kv_ctx->clients[i]->req_q->is_empty()) {
+        for (auto* rq : kv_ctx->req_queues) {
+            if (!rq->queue->is_empty()) {
                 all_empty = false;
                 break;
             }
@@ -409,12 +392,10 @@ void run_async_transaction_phase(
     // Give workers extra time to process and write responses
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    uint64_t end_time = get_time_usec();
-
     printf("[AsyncBench] Stopping response threads...\n");
 
-    // Phase 4: Join response threads (they should have drained by now)
-    for (uint32_t i = 0; i < num_clients; i++) {
+    // Phase 4: Join response threads
+    for (uint32_t i = 0; i < num_threads; i++) {
         pthread_join(contexts[i].response_thread, NULL);
     }
     printf("[AsyncBench] Response threads joined\n");
@@ -445,17 +426,11 @@ void run_async_transaction_phase(
     // Cleanup
     pthread_barrier_destroy(&start_barrier);
 
-    for (uint32_t i = 0; i < num_clients; i++) {
+    for (uint32_t i = 0; i < num_threads; i++) {
         if (measure_latency) {
             pthread_mutex_destroy(&contexts[i].latency_mutex);
         }
     }
 
-    // NOTE: We intentionally do NOT delete pools here.
-    // The pools will be leaked, but this is acceptable because:
-    // 1. Worker threads may still be processing requests that reference these pools
-    // 2. The pools will be cleaned up when the process exits
-    // 3. Fixing this properly would require significant architectural changes
-    //    (e.g., stopping workers before deleting pools)
     printf("[AsyncBench] Async transaction phase complete (pools intentionally not freed)\n");
 }

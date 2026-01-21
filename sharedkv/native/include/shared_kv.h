@@ -116,50 +116,67 @@ enum class ExecutionMode {
     ASYNC   // Asynchronous mode: Request threads + Response threads (non-blocking)
 };
 
-// Client channel (per client - with dedicated Response Thread)
-struct ClientChannel {
-    uint32_t client_id;
+// ============================================================================
+// Simplified Async Architecture Components
+// ============================================================================
 
-    // Queues for application thread and worker communication
-    LockFreeQueue<KVRequest*>* req_q;   // App threads → synchronizer
-    LockFreeQueue<KVResponse>* resp_q;  // Workers → response thread
-
-    // Response thread (dedicated per client)
-    std::thread response_thread;
-    std::atomic<bool> response_thread_running{false};
-
-    // UINTR infrastructure for Response Thread
-    int uintr_fd;
-    std::atomic<bool> uintr_fd_ready{false};
-    std::atomic<bool> response_ready{false};
-
-    // Async mode flow control (per-client in-flight counter)
-    std::atomic<uint64_t> in_flight_count{0};
+// Request Queue: receives requests from Request Threads, consumed by Synchronizer
+struct RequestQueue {
+    uint32_t queue_id;
+    LockFreeQueue<KVRequest*>* queue;
 
     // Statistics
-    std::atomic<uint64_t> requests_sent{0};
-    std::atomic<uint64_t> responses_received{0};
-    std::atomic<uint64_t> responses_failed{0};
+    std::atomic<uint64_t> enqueued{0};
+    std::atomic<uint64_t> dequeued{0};
 
-    ClientChannel(size_t queue_size);
-    ~ClientChannel();
+    RequestQueue(uint32_t id, size_t queue_size);
+    ~RequestQueue();
 };
 
-// Main threading context (singleton per JVM)
+// Response Queue: receives responses from Workers, consumed by Response Threads
+struct ResponseQueue {
+    uint32_t queue_id;
+    LockFreeQueue<KVResponse>* queue;
+
+    // UINTR infrastructure (one per response queue)
+    int uintr_fd{-1};
+    std::atomic<bool> uintr_fd_ready{false};
+
+    // Statistics
+    std::atomic<uint64_t> enqueued{0};
+    std::atomic<uint64_t> dequeued{0};
+
+    ResponseQueue(uint32_t id, size_t queue_size);
+    ~ResponseQueue();
+};
+
+// Async architecture configuration (simplified - no ClientChannel)
+struct AsyncConfig {
+    uint32_t num_req_queues{1};       // Number of request queues
+    uint32_t num_resp_queues{1};      // Number of response queues
+    uint32_t num_req_threads{1};      // Number of request threads
+    uint32_t num_resp_threads{1};     // Number of response threads
+    uint32_t num_workers{1};          // Number of worker threads
+    size_t req_queue_depth{2048};     // Depth of each request queue
+    size_t resp_queue_depth{2048};    // Depth of each response queue
+};
+
+// Main threading context (simplified - no ClientChannel)
 struct SharedKVContext {
     // Shared resources
     SharedHashTable* table;
     void* base;
 
     // Configuration
-    uint32_t num_clients;
-    uint32_t num_workers;
     int numa_node;
     ExecutionMode mode{ExecutionMode::SYNC};
-    size_t max_in_flight{2048};  // Max in-flight requests per client in async mode
+    AsyncConfig config;  // Unified configuration
 
-    // Thread infrastructure
-    std::vector<ClientChannel*> clients;
+    // Queue infrastructure (direct access, no ClientChannel indirection)
+    std::vector<RequestQueue*> req_queues;
+    std::vector<ResponseQueue*> resp_queues;
+
+    // Worker infrastructure
     std::vector<KVWorker*> workers;
     std::vector<std::thread> worker_threads;
     std::thread synchronizer_thread;
@@ -167,49 +184,39 @@ struct SharedKVContext {
 
     // Lifecycle
     std::atomic<bool> stop_flag{false};
-    std::atomic<bool> draining{false};  // True when waiting for workers to drain
+    std::atomic<bool> draining{false};
     std::atomic<bool> initialized{false};
     std::atomic<uint64_t> global_sequence{0};
 
     // Constructor/Destructor
-    SharedKVContext(uint32_t num_clients, uint32_t num_workers, int numa_node,
-                    size_t client_queue_depth = 2048,
-                    size_t worker_ring_buffer_size = 4096);
+    SharedKVContext(int numa_node, const AsyncConfig& cfg, size_t worker_ring_buffer_size = 4096);
     ~SharedKVContext();
 
     // Thread management
     void start_threads();
     void stop_threads();
 
-    // Async mode: Start/Stop response threads (called by benchmark)
-    void start_async_response_threads(int cpu_start);
-    void stop_async_response_threads();
-
     // Set execution mode
     void set_mode(ExecutionMode m) { mode = m; }
     ExecutionMode get_mode() const { return mode; }
 
-    // Request submission (non-blocking, returns success/failure)
-    bool submit_request(uint32_t client_id, KVRequest* req);
-
-    // Async mode: Submit with flow control (blocks if in-flight >= max_in_flight)
-    bool submit_request_async(uint32_t client_id, KVRequest* req);
-
-    // Get response (for sync mode - blocking with timeout)
-    bool get_response(uint32_t client_id, KVResponse& resp, uint64_t timeout_ms);
-
-    // Wait for all in-flight requests to complete (for graceful shutdown)
-    void wait_for_drain(uint64_t timeout_ms = 5000);
-
-    // Get total in-flight count across all clients
-    uint64_t get_total_in_flight() const;
+    // Direct queue access (thread_id % num_queues for mapping)
+    LockFreeQueue<KVResponse>* get_resp_queue(uint32_t thread_id) const {
+        return resp_queues[thread_id % config.num_resp_queues]->queue;
+    }
+    LockFreeQueue<KVRequest*>* get_req_queue(uint32_t thread_id) const {
+        return req_queues[thread_id % config.num_req_queues]->queue;
+    }
+    ResponseQueue* get_resp_queue_obj(uint32_t thread_id) const {
+        return resp_queues[thread_id % config.num_resp_queues];
+    }
+    RequestQueue* get_req_queue_obj(uint32_t thread_id) const {
+        return req_queues[thread_id % config.num_req_queues];
+    }
 };
 
-// Response thread function
-void client_response_thread_func(ClientChannel* channel, std::atomic<bool>* stop_flag);
-
-// Thread-safe initialization
-SharedKVContext* get_or_create_context(uint32_t num_clients, uint32_t num_workers, int numa_node,
-                                       size_t client_queue_depth = 2048,
+// Thread-safe initialization (simplified interface)
+SharedKVContext* get_or_create_context(int numa_node, const AsyncConfig& cfg,
                                        size_t worker_ring_buffer_size = 4096);
+
 void destroy_context();

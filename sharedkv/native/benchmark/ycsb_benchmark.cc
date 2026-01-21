@@ -170,7 +170,7 @@ int execute_operation(SharedKVContext* ctx, uint32_t client_id,
 
     KVRequest* req = new KVRequest();
     req->client_id = client_id;
-    req->resp_q_ptr = ctx->clients[client_id]->resp_q;
+    req->resp_q_ptr = ctx->get_resp_queue(client_id);
     req->timestamp = std::chrono::steady_clock::now().time_since_epoch().count();
     req->recycle_func = nullptr;  // CRITICAL: Initialize to nullptr for heap-allocated requests
     req->recycle_ctx = nullptr;
@@ -208,21 +208,24 @@ int execute_operation(SharedKVContext* ctx, uint32_t client_id,
     // Pre-compute target worker ID
     uint64_t hash = std::hash<std::string>{}(op.key);
     uint32_t bucket_id = hash % NUM_BUCKETS;
-    req->target_worker_id = bucket_id % ctx->num_workers;
+    req->target_worker_id = bucket_id % ctx->config.num_workers;
 
     // Record timestamp for latency measurement
     req->timestamp = get_time_nsec();
 
+    // Get queues for this thread
+    LockFreeQueue<KVRequest*>* req_q = ctx->get_req_queue(client_id);
+    LockFreeQueue<KVResponse>* resp_q = ctx->get_resp_queue(client_id);
+
     // Submit request (non-blocking, busy-spin if queue full)
-    while (!ctx->submit_request(client_id, req)) {
+    while (!req_q->enqueue(req)) {
         std::this_thread::yield();
     }
 
     // Synchronous Mode: Wait for response
-    // (In Async Mode, Response Thread handles this)
     KVResponse resp;
-    if (!ctx->get_response(client_id, resp, 5000)) {
-        return -1;
+    while (!resp_q->dequeue(resp)) {
+        std::this_thread::yield();
     }
 
     if (latency_ns) {
