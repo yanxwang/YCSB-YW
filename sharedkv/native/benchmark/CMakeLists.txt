@@ -30,17 +30,34 @@ set(SHAREDKV_SOURCES
     ../src/uintr_threading.cpp
 )
 
-# Create benchmark executable
+# CXL SharedKV sources (new lock-free implementation)
+set(CXL_SOURCES
+    ../src/cxl_kv_ops.cpp
+    ../src/cxl_worker.cpp
+    ../src/cxl_synchronizer.cpp
+    ../src/cxl_context.cpp
+)
+
+# Create benchmark executable (original version)
 add_executable(sharedkv_benchmark
     ${BENCHMARK_SOURCES}
     ${SHAREDKV_SOURCES}
 )
 
+# Create CXL benchmark executable (new lock-free version)
+add_executable(sharedkv_cxl_benchmark
+    cxl_benchmark.cc
+    ${CXL_SOURCES}
+    ../src/kv_request.cpp
+    ../src/uintr_threading.cpp
+)
+
 # Link libraries
 target_link_libraries(sharedkv_benchmark pthread numa rt)
+target_link_libraries(sharedkv_cxl_benchmark pthread numa rt)
 
-# Install target
-install(TARGETS sharedkv_benchmark RUNTIME DESTINATION bin)
+# Install targets
+install(TARGETS sharedkv_benchmark sharedkv_cxl_benchmark RUNTIME DESTINATION bin)
 
 message(STATUS "------------------------------------")
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")

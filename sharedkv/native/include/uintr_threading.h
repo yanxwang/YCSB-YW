@@ -166,8 +166,14 @@ struct alignas(64) LockFreeQueue {
     // Consumer: dequeue item (non-blocking)
     // Single consumer only - not thread-safe for multiple consumers
     bool dequeue(T& item) {
-        uint64_t pos = tail.load(std::memory_order_relaxed);
+        // Use acquire to ensure we see the latest tail value
+        // This is critical for cross-thread visibility
+        uint64_t pos = tail.load(std::memory_order_acquire);
         Slot& slot = slots[pos & mask];
+
+        // Compiler barrier to prevent optimization of repeated loads
+        std::atomic_signal_fence(std::memory_order_acquire);
+
         uint64_t seq = slot.sequence.load(std::memory_order_acquire);
         int64_t diff = static_cast<int64_t>(seq) - static_cast<int64_t>(pos + 1);
 
@@ -181,13 +187,15 @@ struct alignas(64) LockFreeQueue {
         // Mark slot as available for future writes
         // Next valid write position for this slot is pos + size
         slot.sequence.store(pos + size, std::memory_order_release);
-        tail.store(pos + 1, std::memory_order_relaxed);
+        tail.store(pos + 1, std::memory_order_release);
         return true;
     }
 
     // Check if queue is empty (for poller edge detection)
     bool is_empty() const {
-        uint64_t pos = tail.load(std::memory_order_relaxed);
+        // Use acquire to ensure visibility of latest state
+        uint64_t pos = tail.load(std::memory_order_acquire);
+        std::atomic_signal_fence(std::memory_order_acquire);
         const Slot& slot = slots[pos & mask];
         uint64_t seq = slot.sequence.load(std::memory_order_acquire);
         return static_cast<int64_t>(seq) - static_cast<int64_t>(pos + 1) < 0;
