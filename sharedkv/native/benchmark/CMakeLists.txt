@@ -52,12 +52,34 @@ add_executable(sharedkv_cxl_benchmark
     ../src/uintr_threading.cpp
 )
 
+# 2RW Zero-Copy Architecture sources
+set(TWO_RW_CORE_SOURCES
+    ../src/uintr_threading.cpp
+    ../src/kv_request.cpp       # needed by ycsb_benchmark.cc (execute_operation)
+    ../src/2rw_context.cpp
+    ../src/2rw_synchronizer.cpp
+    ../src/2rw_worker.cpp
+    ../src/2rw_poller.cpp
+)
+
+# 2RW YCSB benchmark executable
+add_executable(sharedkv_2rw_benchmark
+    2rw_benchmark.cc
+    2rw_benchmark_main.cc
+    ycsb_benchmark.cc       # reuse workload loader + print_benchmark_stats
+    ${TWO_RW_CORE_SOURCES}
+)
+
+target_compile_options(sharedkv_2rw_benchmark PRIVATE -muintr)
+
 # Link libraries
 target_link_libraries(sharedkv_benchmark pthread numa rt)
 target_link_libraries(sharedkv_cxl_benchmark pthread numa rt)
+target_link_libraries(sharedkv_2rw_benchmark pthread numa rt)
 
 # Install targets
-install(TARGETS sharedkv_benchmark sharedkv_cxl_benchmark RUNTIME DESTINATION bin)
+install(TARGETS sharedkv_benchmark sharedkv_cxl_benchmark sharedkv_2rw_benchmark
+        RUNTIME DESTINATION bin)
 
 message(STATUS "------------------------------------")
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")

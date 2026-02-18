@@ -79,7 +79,7 @@ SharedKVContext::SharedKVContext(int numa_node, const AsyncConfig& cfg, size_t w
         fprintf(stderr, "[SharedKVContext] Initializing SharedHashTable (magic not found)\n");
         fflush(stderr);
         table->magic = MAGIC_INIT;
-        table->.store(sizeof(SharedHashTable), std::memory_order_relaxed);
+        table->free_offset.store(sizeof(SharedHashTable), std::memory_order_relaxed);
         table->reserved = 0;
  
         for (size_t i = 0; i < NUM_BUCKETS; ++i) {

@@ -33,6 +33,14 @@ set(YCSB_SOURCES
     src/SharedKV_YCSB.cpp
 )
 
+# 2RW Zero-Copy Architecture (SharedKV_2RW_Arch.txt)
+set(TWO_RW_SOURCES
+    src/2rw_context.cpp
+    src/2rw_synchronizer.cpp
+    src/2rw_worker.cpp
+    src/2rw_poller.cpp
+)
+
 # JNI sources (disabled - not needed for native benchmark)
 # set(JNI_SOURCES
 #     src/sharedkv_jni.cpp
@@ -49,6 +57,29 @@ target_link_libraries(sharedkv_jni
     PRIVATE
         pthread
         numa
+)
+
+# 2RW Zero-Copy Architecture shared library
+add_library(sharedkv_2rw SHARED
+    src/uintr_threading.cpp
+    ${TWO_RW_SOURCES}
+)
+
+target_link_libraries(sharedkv_2rw
+    PRIVATE
+        pthread
+        numa
+        rt
+)
+
+set_target_properties(sharedkv_2rw PROPERTIES
+    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
+install(TARGETS sharedkv_2rw
+    LIBRARY DESTINATION lib
+    RUNTIME DESTINATION bin
 )
 
 # Set output directory

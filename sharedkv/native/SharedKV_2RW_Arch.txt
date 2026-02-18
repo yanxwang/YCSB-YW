@@ -1,0 +1,112 @@
+SharedKV Architecture Specification: 2 Read/Write Zero-Copy Pooled Architecture
+Version: 1.3 (Self-Contained Implementation Specification)
+
+1. DESIGN PHILOSOPHY
+**Zero-Copy**: Heavy KV data (Key/Value) resides in the Global Request Pool and is never copied during the pipeline stages.
+**ID-Forwarding**: Only lightweight control packets (32-64 bytes) flow through the control plane to eliminate Synchronizer bottlenecks.
+**Lock-Free Partitioning**: Static memory partitioning across clients and workers eliminates global atomic contention.
+**Linearizability**: Synchronizer assigns a 64-bit Global Sequence Number (GSN) to ensure strict operation ordering.
+**Full-Path Profiling**: Embedded timestamps ($T_0$ to $T_3$) enable microsecond-level bottleneck analysis.
+
+2. THREAD TOPOLOGY & CPU PINNING
+**1 Synchronizer (CPU 0)**: Global Sequencer; assigns GSN and routes requests to Worker buffers.
+**1 Poller (CPU 1)**: Monitors response queues; triggers **UINTR** for Response Thread wakeup.
+**n Request Thread j (CPU $[2, 1+n]$)**: Acquires `slot_id`, fills `KVPoolSlot`, and submits to `RequestQueue`.
+**m Worker Thread i (CPU $[2+n, 1+n+m]$)**: Executes KV operations on its assigned hash partitions.
+**n Response Thread k (CPU $[2+n+m, 1+2n+m]$)**: Polls 2D response array and recycles `slot_id`.
+
+3. CXL MEMORY LAYOUT & COMPONENTS
+* **Global Request Pool**:
+    * **Physical Layer**: A large, contiguous CXL memory region allocated as an array of RequestSlot structures.
+    * **Logical Layer**: Statically partitioned per Client; Client j only uses its assigned slot_id range.
+    * **Slot Allocator**: Each Request Thread j manages a private FreeIDQueue (SPSC); Response Thread j recycles IDs.
+* **Response Queues [n][m]**:
+    * **Structure**: n independent 2D arrays (one per Response thread/Client); each contains m SPSC Ring Buffers.
+    * **Rule**: Worker i only writes to ResponseQueue[j][i]; Response Thread k polls its m queues.
+* **CXLSharedHashTable**:
+    * **Partitioning**: Buckets are assigned to Worker i based on hash(key) % m.
+    * **Single-Writer**: Worker i is the exclusive writer for its buckets; no locks or atomic CAS are needed or allowed for bucket updates.
+* **DataRegion Partitioning**:
+    * **Ownership**: Split into m segments; Worker i has exclusive write access to DataRegion[i].
+    * **Allocation**: Worker i maintains a local current_alloc_offset for $O(1)$ lock-free allocation.
+
+4. DETAILED DATAFLOW (2 R/W PATH)
+* **Step 1 (Request Thread j)**:
+    * Acquires slot_id from its partition and overwrites Pool[slot_id] with KV data.
+    * Executes _mm_sfence() to ensure data visibility on CXL.
+    * Pushes slot_id to RequestQueue[j].
+* **Step 2 (Synchronizer)**:
+    * Polls RequestQueues, assigns global_seq_no, and routes KVRequest to WorkerRing[i].
+* **Step 3 (Worker i)**:
+    * Dequeue KVRequest
+    * Reads Key from Pool[slot_id], performs operation in its DataRegion partition.
+    * Executes _mm_sfence() before updating bucket.head_offset to ensure new nodes are visible.
+    * Writes result to ResponseQueue[j][i] and executes _mm_sfence() before updating write_idx.
+    * Update bucket head (with `_mm_sfence`).
+    * Record **$T_3$** (Finish) and write result to `KVResponse`. 执行 `_mm_sfence()`
+* **Step 4 (Response Thread j)**:
+    * uintr_wait(), waked by poller.
+    * Polls its m SPSC queues and recycles the slot_id to Request Thread j's FreeIDQueue.
+
+## 5. DATA STRUCTURE DEFINITIONS (C++)
+`/**
+ * @brief Global Request Pool Slot (Total: 2048B / 32 Cache Lines)
+ * Optimized for CXL 64B granularity.
+ */
+struct alignas(64) KVPoolSlot {
+    // --- Cache Line 0: Header ---
+    uint64_t magic;       // 0x534B "SK"
+    uint8_t  op_type;     // 1:GET, 2:PUT, 3:UPDATE, 4:DELETE
+    uint16_t key_len;
+    uint32_t val_len;
+    uint64_t t0;          // Timestamp: Request enters pool
+    char     reserved[41]; // Pad to 64B
+    // --- Cache Line 1-2: Key ---
+    char     key[128];
+    // --- Cache Line 3-31: Value ---
+    char     value[1856];
+};
+
+/**
+ * @brief Control Plane Request (Total: 64B / 1 Cache Line)
+ * Prevents False Sharing between Synchronizer and Worker.
+ */
+struct alignas(64) KVRequest {
+    uint32_t worker_id;   // Target worker
+    uint32_t slot_id;     // Index in Global Pool
+    uint64_t gsn;         // Global Sequence Number
+    uint64_t t1;          // Timestamp: Request enters queue
+    uint64_t t2;          // Timestamp: Request dequeued by worker
+    char     padding[32]; // Ensure 64B alignment
+};
+
+/**
+ * @brief Control Plane Response (Total: 64B / 1 Cache Line)
+ */
+struct alignas(64) KVResponse {
+    uint16_t status;      // 0: SUCCESS, 1: NOT_FOUND, etc.
+    uint32_t slot_id;     // For recycling
+    uint64_t val_addr;    // CXL offset for GET results
+    uint16_t val_len;
+    uint64_t gsn;         // Metadata persistence
+    uint64_t t3;          // Timestamp: Operation completed
+    char     padding[32]; 
+};
+
+struct alignas(8) CXLBucket {
+    uint64_t head_offset; 
+};
+
+struct alignas(64) CXLNode {
+    uint64_t next_offset;
+    uint32_t key_len;
+    uint32_t val_len;
+    char     data[];      // Key + Value
+};`
+
+6. PIPELINE DRAIN (SHUTDOWN SEQUENCE)
+1. Signal all Request Threads to stop.
+2. Synchronizer continues until all RequestQueues are empty.
+3. Workers continue until all WorkerRings are empty.
+4. Response Threads continue until all ResponseQueues are empty (write_idx == read_idx).
+

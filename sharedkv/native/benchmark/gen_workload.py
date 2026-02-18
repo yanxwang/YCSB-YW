@@ -158,7 +158,7 @@ def main():
     parser = argparse.ArgumentParser(description='Generate YCSB workload files for SharedKV')
     parser.add_argument('-w', '--workload', required=True, choices=['a', 'b', 'c'],
                        help='Workload type (a, b, or c)')
-    parser.add_argument('-r', '--records', type=int, default=100000,
+    parser.add_argument('-r', '--records', type=int, default=10000000,
                        help='Number of records to load (default: 100000)')
     parser.add_argument('-o', '--operations', type=int, default=1000000,
                        help='Number of operations in transaction phase (default: 1000000)')
