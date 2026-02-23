@@ -37,6 +37,9 @@
 
 // Write back a cache line to memory, keep clean copy in cache.
 // Use on producer side after writing data that needs to be visible to consumer.
+// Use when writing shared variables that needs to be visible to the other 
+// (e.g., write_idx, updated by producer, read by consumer for checking if queue is full or empty).
+// (e.g., read_idex, updated by consumer, read by producer for checking if queue is full or empty).
 static inline void cxl_clwb(const volatile void* addr) {
     asm volatile("clwb (%0)" :: "r"(addr) : "memory");
 }
@@ -222,6 +225,56 @@ public:
         return true;
     }
 
+    // Batch enqueue up to count items with only 2 sfences total (vs 2×count).
+    //
+    // Protocol:
+    //   1. NT-store all slot data (no intermediate sfence)
+    //   2. sfence  — ensures ALL slot data is globally visible before write_idx
+    //   3. NT-store write_idx += count
+    //   4. sfence  — makes write_idx visible to consumer
+    //
+    // Correctness: consumer sees write_idx = w+count only after sfence2.
+    // At that point sfence1 has already run, so all slots are in CXL memory.
+    // Consumer's clflushopt+lfence on each slot will find fresh data.
+    //
+    // Returns number of items actually enqueued (≤ count, may be less if full).
+    uint64_t enqueue_batch(const T* items, uint64_t count) {
+        if (count == 0) return 0;
+        uint64_t w = cached_write_;
+
+        // Ensure space — refresh read_idx if stale
+        uint64_t space = Capacity - (w - cached_read_);
+        if (space < count) {
+            cxl_clflushopt(&q_->read_idx);
+            _mm_lfence();
+            cached_read_ = q_->read_idx;
+            space = Capacity - (w - cached_read_);
+            if (space == 0) return 0;
+            if (count > space) count = space;
+        }
+
+        // Write all slot data with NT stores — no sfence between items.
+        // All writes go to WC buffer and will be flushed together by sfence below.
+        for (uint64_t i = 0; i < count; i++) {
+            T* slot = &q_->slots[(w + i) & (Capacity - 1)];
+            cxl_nt_memcpy(slot, &items[i], sizeof(T));
+        }
+
+        // sfence 1: drain WC buffer → all slot data globally visible before write_idx
+        _mm_sfence();
+
+        // NT-store write_idx: consumer will see it jump by 'count'
+        _mm_stream_si64(
+            reinterpret_cast<long long*>(const_cast<uint64_t*>(&q_->write_idx)),
+            static_cast<long long>(w + count));
+
+        // sfence 2: make write_idx visible to consumer
+        _mm_sfence();
+
+        cached_write_ = w + count;
+        return count;
+    }
+
     // Check available space (may return conservative estimate due to stale read_idx)
     uint64_t available_space() const {
         return Capacity - (cached_write_ - cached_read_);
@@ -270,6 +323,7 @@ public:
     }
 
     // Dequeue a single item. Returns false if queue is empty.
+    // Flushes read_idx to CXL on every call (eager, safe, but slow).
     bool dequeue(T& item) {
         uint64_t r = cached_read_;
 
@@ -305,36 +359,129 @@ public:
         return true;
     }
 
-    // Dequeue up to max_count items in a batch. Returns number dequeued.
-    // More efficient than single dequeue: amortizes write_idx flush cost.
+    // Dequeue without flushing read_idx to CXL (lazy / amortized variant).
+    //
+    // Removes the clwb(read_idx) + sfence from the hot path.  The caller
+    // MUST call flush_read_idx() periodically (every READ_ACK_BATCH items)
+    // so the producer does not stall on a full queue.  A safe upper bound
+    // for READ_ACK_BATCH is Capacity / 4.
+    //
+    // Effect on the Synchronizer timing budget:
+    //   A_vis: drops from ~482 to ~50 ticks (no sfence inside dequeue_lazy)
+    //   C:     drops from ~1300 to ~200 ticks (no pending clwb when enqueue
+    //          issues its first sfence; the slot NT-stores drain quickly)
+    //   flush: ~1887 ticks every READ_ACK_BATCH ops → amortized ~118 ticks
+    bool dequeue_lazy(T& item) {
+        uint64_t r = cached_read_;
+
+        // Check if there's data using our (possibly stale) cached_write_
+        if (r >= cached_write_) {
+            // Refresh write_idx from shared memory
+            cxl_clflushopt(&q_->write_idx);
+            _mm_lfence();
+            cached_write_ = q_->write_idx;
+
+            // Still empty?
+            if (r >= cached_write_) {
+                return false;
+            }
+        }
+
+        // Invalidate the slot's cache lines to get fresh data from memory
+        const T* slot = &q_->slots[r & (Capacity - 1)];
+        cxl_invalidate_range(slot, sizeof(T));
+        _mm_lfence();
+
+        // Read the data (will fetch from memory since cache was invalidated)
+        item = *slot;
+
+        // Update local index only — do NOT flush read_idx to CXL here.
+        // Caller must call flush_read_idx() every READ_ACK_BATCH dequeues.
+        cached_read_ = r + 1;
+        return true;
+    }
+
+    // Commit the current read_idx to CXL so the producer can reclaim slots.
+    // Call every READ_ACK_BATCH successful dequeue_lazy() calls, and once
+    // more after the consumer is done (drain / shutdown path).
+    void flush_read_idx() {
+        const_cast<volatile uint64_t&>(q_->read_idx) = cached_read_;
+        cxl_clwb(&q_->read_idx);
+        _mm_sfence();
+    }
+
+    // Pipelined batch dequeue: issue ALL cache invalidations first, ONE lfence,
+    // then read all items — allows the CPU to service multiple CXL loads in
+    // parallel (CPU supports ~10-20 outstanding LLC misses).
+    //
+    // vs. dequeue_batch (old): old version had lfence inside the loop, forcing
+    //   each CXL load to complete before the next invalidation could be issued.
+    //   That serialized N loads → N × CXL_RTT.
+    //
+    // vs. dequeue_lazy (single-item): same cost per item when count=1, but
+    //   for count=K the pipeline overlaps K CXL fetches → ~CXL_RTT total.
+    //
+    // read_idx is NOT flushed here (lazy).  Caller must call flush_read_idx()
+    // periodically (every READ_ACK_BATCH items total across calls).
+    //
+    // Returns number of items dequeued (0 if empty, ≤ max_count).
+    uint64_t dequeue_batch_pipelined(T* items, uint64_t max_count) {
+        uint64_t r = cached_read_;
+
+        // Refresh write_idx only when our cached view is exhausted (lazy refresh).
+        if (r >= cached_write_) {
+            cxl_clflushopt(&q_->write_idx);
+            _mm_lfence();
+            cached_write_ = q_->write_idx;
+            if (r >= cached_write_) return 0;
+        }
+
+        uint64_t available = cached_write_ - r;
+        uint64_t count = (available < max_count) ? available : max_count;
+
+        // Phase 1: issue ALL clflushopt upfront — non-blocking, no lfence yet.
+        // Evicts each slot's cache line(s) so the subsequent loads fetch from CXL.
+        for (uint64_t i = 0; i < count; i++) {
+            cxl_invalidate_range(&q_->slots[(r + i) & (Capacity - 1)], sizeof(T));
+        }
+
+        // Phase 2: ONE lfence — orders all prior clflushopt before any load.
+        _mm_lfence();
+
+        // Phase 3: read all items.  CPU issues all loads without waiting for each
+        // to complete before the next — multiple CXL fetches in flight at once.
+        for (uint64_t i = 0; i < count; i++) {
+            items[i] = q_->slots[(r + i) & (Capacity - 1)];
+        }
+
+        // Update local index only — caller manages flush_read_idx().
+        cached_read_ = r + count;
+        return count;
+    }
+
+    // Legacy eager batch dequeue (kept for reference; prefer dequeue_batch_pipelined).
+    // Difference: lfence is inside the loop → N lfences, serialises CXL loads.
     uint64_t dequeue_batch(T* items, uint64_t max_count) {
         uint64_t r = cached_read_;
 
-        // Refresh write_idx to see how many items are available
+        // Unconditionally refresh write_idx
         cxl_clflushopt(&q_->write_idx);
         _mm_lfence();
         cached_write_ = q_->write_idx;
 
         uint64_t available = cached_write_ - r;
-        if (available == 0) {
-            return 0;
-        }
+        if (available == 0) return 0;
 
         uint64_t count = (available < max_count) ? available : max_count;
 
         for (uint64_t i = 0; i < count; i++) {
-            uint64_t idx = (r + i) & (Capacity - 1);
-            const T* slot = &q_->slots[idx];
-
-            // Invalidate slot cache lines
+            const T* slot = &q_->slots[(r + i) & (Capacity - 1)];
             cxl_invalidate_range(slot, sizeof(T));
-            _mm_lfence();
-
-            // Read fresh data
+            _mm_lfence();       // serialises each load — prevents pipelining
             items[i] = *slot;
         }
 
-        // Update read_idx once for the entire batch
+        // Flush read_idx eagerly (one sfence for the batch)
         const_cast<volatile uint64_t&>(q_->read_idx) = r + count;
         cxl_clwb(&q_->read_idx);
         _mm_sfence();

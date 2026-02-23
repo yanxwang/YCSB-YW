@@ -10,12 +10,12 @@
 //     executed and all previous loads are globally visible."
 //
 // Phase breakdown per request:
-//   A_vis: dequeue() return time (clflushopt overhead + sfence on read_idx)
-//          NOTE: dequeue's "item = *slot" CXL loads are non-blocking stores
-//          on the call stack — dequeue returns before slot loads complete.
-//   A_hid: CXL slot read completion (t_b0 - t_a1).
-//          RDTSCP at t_b0 waits for in-flight slot loads → this captures
-//          the actual CXL round-trip latency for KVRequest data.
+//   A_vis: dequeue_lazy() return time (clflushopt + lfence + CXL slot load).
+//          No sfence inside dequeue_lazy, so this is dominated by the CXL
+//          slot read latency (clflushopt evicts the line, then *slot fetches
+//          from CXL and stalls until data arrives).
+//   A_hid: time from dequeue_lazy() return until rdtscp(t_b0) serialises.
+//          Should be near-zero: item=*slot already blocked in A_vis.
 //   B:     gsn increment — local_gsn++ (register-only, ~1 cycle).
 //          Previously used fetch_add (lock xadd), which as a full memory
 //          barrier was forced to wait for the prior CXL read_idx write
@@ -24,7 +24,11 @@
 //          already left the CPU's store buffer.  rdtscp does NOT wait for
 //          stores (only loads), so it did not catch this; lock xadd did.
 //          Fix: gsn is only written by Sync → no lock needed.
-//   C:     ring enqueue (NT stores + 2×sfence to CXL WorkerRing)
+//   C:     ring enqueue (NT stores + 2×sfence to CXL WorkerRing).
+//          With lazy dequeue, there is no pending clwb(read_idx) when the
+//          enqueue sfences run, so C should drop from ~1300 to ~200 ticks.
+//   F:     flush_read_idx() cost (clwb+sfence to CXL), measured every
+//          READ_ACK_BATCH ops and amortised across the batch.
 // ============================================================================
 
 #include "2rw_context.h"
@@ -67,27 +71,36 @@ void two_rw_synchronizer_run(SyncThreadState* s) {
             static_cast<void*>(&s->gsn));
     }
 
-    // ── Local GSN counter (replaces s->gsn.fetch_add in the hot path) ────────
-    // gsn is written ONLY by the Sync thread.  Using fetch_add (lock xadd)
-    // triggered a full memory barrier that was forced to wait for the prior
-    // CXL write (read_idx clwb in dequeue) to be acknowledged by the CXL
-    // device (~1250 ns ≈ 1887 ticks per op).  A plain register increment
-    // avoids the lock prefix entirely.  s->gsn is updated after the loop.
+    // ── Local GSN counter ─────────────────────────────────────────────────────
     uint64_t local_gsn = s->gsn.load(std::memory_order_relaxed);
+
+    // ── Tuning knobs ──────────────────────────────────────────────────────────
+    // DEQUEUE_BATCH: items pulled from one RequestQueue per round-robin step.
+    //   All clflushopt issued upfront, ONE lfence, then reads in parallel →
+    //   pipelined CXL fetches.  Keep ≤ Capacity/4 and small enough to fit on
+    //   the stack (KVRequest × DEQUEUE_BATCH bytes).
+    // READ_ACK_BATCH: flush read_idx to CXL every this many dequeues per queue.
+    //   Safe limit: Capacity / 4 (default queue_depth=1024 → 256 max).
+    static constexpr uint32_t DEQUEUE_BATCH  = 8;
+    static constexpr uint32_t READ_ACK_BATCH = 32;
 
     uint32_t queue_idx    = 0;
     uint64_t total_routed = 0;
     uint64_t empty_polls  = 0;
+    uint64_t flush_count  = 0;
 
     uint64_t* queue_dequeued   = new uint64_t[n]();
     uint64_t* worker_enqueued  = new uint64_t[m]();
     uint64_t* worker_fullwaits = new uint64_t[m]();
+    uint32_t* lazy_count       = new uint32_t[n]();
 
-    uint64_t a_visible_total = 0;  // dequeue() return time (excl. slot load wait)
-    uint64_t a_hidden_total  = 0;  // CXL slot read wait (t_b0 - t_a1)
-    uint64_t b_total         = 0;  // gsn fetch_add (t_b1 - t_b0)
-    uint64_t c_total         = 0;  // ring enqueue  (t_c1 - t_c0)
-    uint64_t body_total      = 0;  // t_c1 - t_a0
+    // Timing accumulators:
+    //   A: pipelined batch dequeue (amortised over DEQUEUE_BATCH items)
+    //   C: per-item enqueue to CXL WorkerRing (NT stores + 2×sfence)
+    //   F: flush_read_idx() cost, amortised over READ_ACK_BATCH items
+    uint64_t a_total     = 0;
+    uint64_t c_total     = 0;
+    uint64_t f_total     = 0;
 
     uint64_t tsc_start       = __rdtsc();
     uint64_t last_report_tsc = tsc_start;
@@ -95,67 +108,76 @@ void two_rw_synchronizer_run(SyncThreadState* s) {
 
     fprintf(stderr,
         "[Sync] Started. Polling %u RequestQueues → %u WorkerRings\n"
-        "[Sync]   Timing: rdtscp (serialized). "
-        "A_vis=deq_return  A_hid=CXL_slot_read  B=gsn  C=enq\n",
-        n, m);
+        "[Sync]   Mode: dequeue_batch_pipelined (DEQUEUE_BATCH=%u  READ_ACK_BATCH=%u)\n"
+        "[Sync]   Timing: rdtscp. A=pipelined_batch_deq/op  C=enq/op  F=flush/op\n",
+        n, m, DEQUEUE_BATCH, READ_ACK_BATCH);
 
-    uint32_t aux;  // rdtscp TSC_AUX (processor ID)
+    uint32_t aux;
+    KVRequest batch[DEQUEUE_BATCH];  // stack-allocated, avoids heap per iteration
 
     while (true) {
         bool found_any = false;
 
         for (uint32_t j = 0; j < n; j++) {
-            KVRequest req;
 
-            // ── A_visible: time for dequeue() to return ───────────────────
-            // dequeue() ends with _mm_sfence() (drains stores only).
-            // "item = *slot" CXL loads are still in-flight on return.
+            // ── A: pipelined batch dequeue ────────────────────────────────
+            // Phases inside dequeue_batch_pipelined:
+            //   1. clflushopt(slot[0..count-1]) — all upfront, non-blocking
+            //   2. ONE lfence
+            //   3. items[0..count-1] = *slot[i] — CPU pipelines CXL fetches
+            // A ticks / count = amortised CXL read cost per item.
             uint64_t t_a0 = __rdtscp(&aux);
-            bool got = s->req_consumers[queue_idx].dequeue(req);
+            uint64_t count = s->req_consumers[queue_idx]
+                                 .dequeue_batch_pipelined(batch, DEQUEUE_BATCH);
             uint64_t t_a1 = __rdtscp(&aux);
 
-            if (got) {
+            if (count > 0) {
                 found_any = true;
-                queue_dequeued[queue_idx]++;
-                a_visible_total += t_a1 - t_a0;
+                queue_dequeued[queue_idx] += count;
+                a_total += t_a1 - t_a0;   // batch time; divide by count for per-item
 
-                // ── A_hidden: CXL slot read completion ───────────────────
-                // rdtscp at t_b0 serializes on ALL prior loads, including
-                // the "item = *slot" CXL loads still in-flight from dequeue.
-                // t_b0 - t_a1 = true CXL round-trip latency for KVRequest.
-                uint64_t t_b0 = __rdtscp(&aux);
-                a_hidden_total += t_b0 - t_a1;
+                // ── Process each item from the batch ─────────────────────
+                for (uint64_t k = 0; k < count; k++) {
+                    KVRequest& req = batch[k];
 
-                // ── B: gsn increment (register-only, ~1 cycle) ───────────
-                // local_gsn++ avoids lock xadd and the CXL-write-drain stall.
-                req.gsn = local_gsn++;
-                uint64_t t_b1 = __rdtscp(&aux);
-                b_total += t_b1 - t_b0;
+                    // gsn: register-only, ~1 cycle per item
+                    req.gsn = local_gsn++;
 
-                // ── C: enqueue to CXL WorkerRing ─────────────────────────
-                uint32_t wid = req.worker_id % m;
-                uint64_t wait_rounds = 0;
-                uint64_t t_c0 = __rdtscp(&aux);
-                while (!s->ring_producers[wid].enqueue(req)) {
-                    wait_rounds++;
-                    _mm_pause();
-                    if (s->stop_flag->load(std::memory_order_relaxed)) {
-                        uint64_t t_c1 = __rdtscp(&aux);
-                        c_total    += t_c1 - t_c0;
-                        body_total += t_c1 - t_a0;
-                        total_routed++;
-                        worker_enqueued[wid]++;
-                        worker_fullwaits[wid] += wait_rounds;
-                        goto drain_done;
+                    // ── C: enqueue to CXL WorkerRing ─────────────────────
+                    uint32_t wid = req.worker_id % m;
+                    uint64_t wait_rounds = 0;
+                    uint64_t t_c0 = __rdtscp(&aux);
+                    while (!s->ring_producers[wid].enqueue(req)) {
+                        wait_rounds++;
+                        _mm_pause();
+                        if (s->stop_flag->load(std::memory_order_relaxed)) {
+                            uint64_t t_c1 = __rdtscp(&aux);
+                            c_total += t_c1 - t_c0;
+                            worker_enqueued[wid]++;
+                            worker_fullwaits[wid] += wait_rounds;
+                            total_routed++;
+                            goto drain_done;
+                        }
                     }
-                }
-                uint64_t t_c1 = __rdtscp(&aux);
-                c_total    += t_c1 - t_c0;
-                body_total += t_c1 - t_a0;
+                    uint64_t t_c1 = __rdtscp(&aux);
+                    c_total += t_c1 - t_c0;
 
-                worker_enqueued[wid]++;
-                worker_fullwaits[wid] += wait_rounds;
-                total_routed++;
+                    worker_enqueued[wid]++;
+                    worker_fullwaits[wid] += wait_rounds;
+                    total_routed++;
+                }
+
+                // ── F: lazy flush of read_idx to CXL ─────────────────────
+                // Amortised: one clwb+sfence per READ_ACK_BATCH dequeues.
+                lazy_count[queue_idx] += static_cast<uint32_t>(count);
+                if (lazy_count[queue_idx] >= READ_ACK_BATCH) {
+                    uint64_t t_f0 = __rdtscp(&aux);
+                    s->req_consumers[queue_idx].flush_read_idx();
+                    uint64_t t_f1 = __rdtscp(&aux);
+                    f_total += t_f1 - t_f0;
+                    flush_count++;
+                    lazy_count[queue_idx] = 0;
+                }
 
                 if (total_routed % REPORT_INTERVAL == 0) {
                     uint64_t now = __rdtsc();
@@ -164,55 +186,22 @@ void two_rw_synchronizer_run(SyncThreadState* s) {
 
                     double wall = delta_tsc > 0
                         ? static_cast<double>(delta_tsc) / delta_ops : 0.0;
-                    double av = static_cast<double>(a_visible_total) / total_routed;
-                    double ah = static_cast<double>(a_hidden_total)  / total_routed;
-                    double b  = static_cast<double>(b_total)         / total_routed;
-                    double c  = static_cast<double>(c_total)         / total_routed;
+                    double a = static_cast<double>(a_total) / total_routed;
+                    double c = static_cast<double>(c_total) / total_routed;
+                    double f = static_cast<double>(f_total) / total_routed;
 
                     uint64_t total_fw = 0;
                     for (uint32_t i = 0; i < m; i++) total_fw += worker_fullwaits[i];
 
                     fprintf(stderr,
                         "[Sync] ops=%7lu  wall=%.1f  "
-                        "A_vis=%.1f  A_hid(CXL)=%.1f  B(gsn)=%.1f  C(enq)=%.1f  "
+                        "A(deq/op)=%.1f  C(enq/op)=%.1f  F(flush/op)=%.1f  "
                         "fw=%lu  empty=%lu\n",
-                        total_routed, wall, av, ah, b, c,
+                        total_routed, wall, a, c, f,
                         total_fw, empty_polls);
 
                     last_report_tsc = now;
                     last_report_ops = total_routed;
-
-                    // ── Sampled NUMA check for gsn (syscall, ~1µs, done once) ──
-                    // Verifies the physical page backing gsn is on the expected node.
-                    // get_mempolicy with MPOL_F_NODE|MPOL_F_ADDR queries the
-                    // *actual* physical node (requires page to be faulted in).
-                    // Page is guaranteed faulted in after REPORT_INTERVAL ops.
-                    if (total_routed == REPORT_INTERVAL) {
-                        int gsn_phys_node = -1;
-                        get_mempolicy(&gsn_phys_node, nullptr, 0,
-                                      static_cast<void*>(
-                                          const_cast<std::atomic<uint64_t>*>(&s->gsn)),
-                                      MPOL_F_NODE | MPOL_F_ADDR);
-                        fprintf(stderr,
-                            "[Sync] ── gsn NUMA sampling ──\n"
-                            "[Sync]   &s->gsn           = %p\n"
-                            "[Sync]   s->cxl_base       = %p\n"
-                            "[Sync]   gsn physical node = %d\n"
-                            "[Sync]   gsn on CXL?       = %s\n"
-                            "[Sync]   (B=%.1f ticks — if gsn_node==CXL_node, "
-                            "this is CXL latency per fetch_add)\n",
-                            static_cast<const void*>(&s->gsn),
-                            s->cxl_base,
-                            gsn_phys_node,
-                            // CXL slab spans [cxl_base, cxl_base+total_size).
-                            // Must check BOTH bounds to avoid false positive.
-                            ((uintptr_t)&s->gsn >= (uintptr_t)s->cxl_base &&
-                             (uintptr_t)&s->gsn <  (uintptr_t)s->cxl_base
-                                                    + s->layout->total_size)
-                                ? "YES — gsn is inside CXL slab!"
-                                : "no (gsn is outside CXL slab, as expected)",
-                            b);
-                    }
                 }
             }
             queue_idx = (queue_idx + 1) % n;
@@ -235,8 +224,12 @@ void two_rw_synchronizer_run(SyncThreadState* s) {
         }
     }
 drain_done:;
-    // Sync local_gsn back to s->gsn so two_rw_stop() can read the final value.
-    // Use relaxed — the thread join in two_rw_stop provides the happens-before.
+    // Flush all read_idxs so producers can reclaim slots before we exit.
+    for (uint32_t j2 = 0; j2 < n; j2++) {
+        s->req_consumers[j2].flush_read_idx();
+    }
+
+    // Sync local_gsn back; thread join provides happens-before.
     s->gsn.store(local_gsn, std::memory_order_relaxed);
 
     uint64_t tsc_total       = __rdtsc() - tsc_start;
@@ -249,24 +242,29 @@ drain_done:;
     double avg_wall = total_routed > 0
         ? static_cast<double>(tsc_total) / total_routed : 0.0;
 
+    double avg_flush_raw = flush_count > 0
+        ? static_cast<double>(f_total) / flush_count : 0.0;
+
     fprintf(stderr,
         "[Sync] ===== Final Statistics =====\n"
         "[Sync]   total_routed  : %lu\n"
         "[Sync]   empty_polls   : %lu\n"
         "[Sync]   ring_fullwaits: %lu\n"
+        "[Sync]   flush calls   : %lu  (batch=%u, raw/flush=%.1f ticks)\n"
         "[Sync]   wall ticks/op : %.1f\n"
         "[Sync]\n"
         "[Sync]   Sub-operation breakdown (rdtscp-serialized, avg ticks/op):\n"
-        "[Sync]     A_vis  dequeue return     : %6.1f  (clflushopt+sfence overhead)\n"
-        "[Sync]     A_hid  CXL slot read wait : %6.1f  ← bottleneck (full CXL RTT)\n"
-        "[Sync]     B      gsn fetch_add      : %6.1f  (lock xadd, node-0 L1)\n"
-        "[Sync]     C      ring enqueue       : %6.1f  (NT stores + 2×sfence)\n"
-        "[Sync]     body   (A+B+C+rdtscp ovhd): %6.1f\n"
-        "[Sync]     loop overhead (wall-body) : %6.1f\n",
-        total_routed, empty_polls, total_fullwaits, avg_wall,
-        avg(a_visible_total), avg(a_hidden_total),
-        avg(b_total), avg(c_total), avg(body_total),
-        avg_wall - avg(body_total));
+        "[Sync]     A  pipelined batch deq/op  : %6.1f  (DEQUEUE_BATCH=%u)\n"
+        "[Sync]     C  ring enqueue/op         : %6.1f  (NT stores + 2×sfence)\n"
+        "[Sync]     F  flush amortised/op      : %6.1f  (READ_ACK_BATCH=%u)\n"
+        "[Sync]     loop+rdtscp overhead/op    : %6.1f\n",
+        total_routed, empty_polls, total_fullwaits,
+        flush_count, READ_ACK_BATCH, avg_flush_raw,
+        avg_wall,
+        avg(a_total), DEQUEUE_BATCH,
+        avg(c_total),
+        avg(f_total), READ_ACK_BATCH,
+        avg_wall - avg(a_total) - avg(c_total) - avg(f_total));
 
     fprintf(stderr, "[Sync]   Per RequestQueue:\n");
     for (uint32_t j = 0; j < n; j++)
@@ -280,6 +278,7 @@ drain_done:;
     delete[] queue_dequeued;
     delete[] worker_enqueued;
     delete[] worker_fullwaits;
+    delete[] lazy_count;
 }
 
 } // namespace TwoRW
