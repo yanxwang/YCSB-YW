@@ -285,6 +285,20 @@ TwoRWContext* two_rw_init(const TwoRWConfig& cfg) {
         ctx->ring_consumers[i].attach(ctx->layout.worker_ring(ctx->cxl_base, i));
     }
 
+    // ---- Optional: local DRAM WorkerRing ----
+    if (cfg.local_workerring) {
+        ctx->local_rings          = new LocalSpscQueue<KVRequest, QUEUE_CAP>[m];
+        ctx->local_ring_producers = new LocalSpscProducer<KVRequest, QUEUE_CAP>[m];
+        ctx->local_ring_consumers = new LocalSpscConsumer<KVRequest, QUEUE_CAP>[m];
+        for (uint32_t i = 0; i < m; i++) {
+            ctx->local_rings[i].init();
+            ctx->local_ring_producers[i].attach(&ctx->local_rings[i]);
+            ctx->local_ring_consumers[i].attach(&ctx->local_rings[i]);
+        }
+        fprintf(stderr, "[2RW] local_workerring: allocated %u DRAM rings (%zu KB each)\n",
+                m, sizeof(LocalSpscQueue<KVRequest, QUEUE_CAP>) >> 10);
+    }
+
     // Verify req_consumers and ring_producers are on the right NUMA node
     if (ctx->sync_alloc_is_numa && n > 0) {
         int node = -1;
@@ -343,14 +357,16 @@ TwoRWContext* two_rw_init(const TwoRWConfig& cfg) {
             ctx->sync_state = new SyncThreadState{};
         }
     }
-    ctx->sync_state->layout         = &ctx->layout;
-    ctx->sync_state->cxl_base       = ctx->cxl_base;
-    ctx->sync_state->stop_flag      = &ctx->stop_flag;
+    ctx->sync_state->layout               = &ctx->layout;
+    ctx->sync_state->cxl_base             = ctx->cxl_base;
+    ctx->sync_state->stop_flag            = &ctx->stop_flag;
     // gsn is now embedded in SyncThreadState (no pointer setup needed)
-    ctx->sync_state->ring_producers = ctx->ring_producers;
-    ctx->sync_state->req_consumers  = ctx->req_consumers;
-    ctx->sync_state->num_clients    = n;
-    ctx->sync_state->num_workers    = m;
+    ctx->sync_state->ring_producers       = ctx->ring_producers;
+    ctx->sync_state->req_consumers        = ctx->req_consumers;
+    ctx->sync_state->local_ring_producers = ctx->local_ring_producers; // null if not used
+    ctx->sync_state->use_local_ring       = cfg.local_workerring;
+    ctx->sync_state->num_clients          = n;
+    ctx->sync_state->num_workers          = m;
 
     // Verify gsn is on the right NUMA node
     {
@@ -366,20 +382,18 @@ TwoRWContext* two_rw_init(const TwoRWConfig& cfg) {
 
     ctx->worker_states = new WorkerThreadState[m];
     for (uint32_t i = 0; i < m; i++) {
-        auto& ws          = ctx->worker_states[i];
-        ws.worker_id      = i;
-        ws.layout         = &ctx->layout;
-        ws.cxl_base       = ctx->cxl_base;
-        ws.stop_flag      = &ctx->stop_flag;
-        ws.region_meta    = ctx->layout.data_region_meta(ctx->cxl_base, i);
-        ws.ring_consumer  = &ctx->ring_consumers[i];
-        ws.resp_producers = &ctx->resp_producers[i];  // stride = m
-        ws.num_clients    = n;
-    }
-    // Fix resp_producers indexing: worker i needs resp_producers[j*m + i]
-    // We give each worker a pointer to the base, worker uses [j * m + worker_id]
-    for (uint32_t i = 0; i < m; i++) {
-        ctx->worker_states[i].resp_producers = ctx->resp_producers;
+        auto& ws                 = ctx->worker_states[i];
+        ws.worker_id             = i;
+        ws.layout                = &ctx->layout;
+        ws.cxl_base              = ctx->cxl_base;
+        ws.stop_flag             = &ctx->stop_flag;
+        ws.region_meta           = ctx->layout.data_region_meta(ctx->cxl_base, i);
+        ws.ring_consumer         = &ctx->ring_consumers[i];
+        ws.local_ring_consumer   = cfg.local_workerring
+                                   ? &ctx->local_ring_consumers[i] : nullptr;
+        ws.use_local_ring        = cfg.local_workerring;
+        ws.resp_producers        = ctx->resp_producers; // base; worker uses [j*m + wid]
+        ws.num_clients           = n;
     }
 
     ctx->poller_state = new PollerThreadState{};
@@ -482,6 +496,10 @@ void two_rw_destroy(TwoRWContext* ctx) {
     delete[] ctx->resp_fd_ready;
     delete[] ctx->worker_states;
     delete   ctx->poller_state;
+    // Local DRAM rings (regular new[], only allocated when local_workerring=true)
+    delete[] ctx->local_ring_consumers;
+    delete[] ctx->local_ring_producers;
+    delete[] ctx->local_rings;
 
     // Sync-hot allocations: req_consumers[n], ring_producers[m], sync_state
     // These were allocated via numa_alloc_onnode+placement-new when sync_alloc_is_numa.

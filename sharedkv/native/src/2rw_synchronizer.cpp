@@ -143,20 +143,35 @@ void two_rw_synchronizer_run(SyncThreadState* s) {
                     // gsn: register-only, ~1 cycle per item
                     req.gsn = local_gsn++;
 
-                    // ── C: enqueue to CXL WorkerRing ─────────────────────
+                    // ── C: enqueue to WorkerRing (CXL or local DRAM) ─────
                     uint32_t wid = req.worker_id % m;
                     uint64_t wait_rounds = 0;
                     uint64_t t_c0 = __rdtscp(&aux);
-                    while (!s->ring_producers[wid].enqueue(req)) {
-                        wait_rounds++;
-                        _mm_pause();
-                        if (s->stop_flag->load(std::memory_order_relaxed)) {
-                            uint64_t t_c1 = __rdtscp(&aux);
-                            c_total += t_c1 - t_c0;
-                            worker_enqueued[wid]++;
-                            worker_fullwaits[wid] += wait_rounds;
-                            total_routed++;
-                            goto drain_done;
+                    if (s->use_local_ring) {
+                        while (!s->local_ring_producers[wid].enqueue(req)) {
+                            wait_rounds++;
+                            _mm_pause();
+                            if (s->stop_flag->load(std::memory_order_relaxed)) {
+                                uint64_t t_c1 = __rdtscp(&aux);
+                                c_total += t_c1 - t_c0;
+                                worker_enqueued[wid]++;
+                                worker_fullwaits[wid] += wait_rounds;
+                                total_routed++;
+                                goto drain_done;
+                            }
+                        }
+                    } else {
+                        while (!s->ring_producers[wid].enqueue(req)) {
+                            wait_rounds++;
+                            _mm_pause();
+                            if (s->stop_flag->load(std::memory_order_relaxed)) {
+                                uint64_t t_c1 = __rdtscp(&aux);
+                                c_total += t_c1 - t_c0;
+                                worker_enqueued[wid]++;
+                                worker_fullwaits[wid] += wait_rounds;
+                                total_routed++;
+                                goto drain_done;
+                            }
                         }
                     }
                     uint64_t t_c1 = __rdtscp(&aux);

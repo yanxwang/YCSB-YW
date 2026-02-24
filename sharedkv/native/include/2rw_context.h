@@ -7,6 +7,7 @@
 #include "2rw_structs.h"
 #include "2rw_layout.h"
 #include "cxl_spsc_queue.h"
+#include "local_spsc_queue.h"
 #include <atomic>
 #include <thread>
 #include <vector>
@@ -48,6 +49,7 @@ struct TwoRWConfig {
     uint32_t queue_depth       = 1024;       // SPSC ring depth (≤ QUEUE_CAP)
     uint64_t memory_size       = 16ULL << 30; // 16 GB
     int      worker_cpu_start  = -1;         // -1 = auto: 2 + num_clients
+    bool     local_workerring  = false;      // WorkerRing on local DRAM (vs CXL)
 
     // ---- Parsing ----
 
@@ -66,6 +68,8 @@ struct TwoRWConfig {
         get("TWO_RW_QUEUE_DEPTH",        c.queue_depth);
         get("TWO_RW_MEMORY_SIZE",        c.memory_size);
         get("TWO_RW_WORKER_CPU_START",   c.worker_cpu_start);
+        const char* v_lwr = getenv("TWO_RW_LOCAL_WORKERRING");
+        if (v_lwr && v_lwr[0] != '0' && v_lwr[0] != '\0') c.local_workerring = true;
         return c;
     }
 
@@ -104,11 +108,13 @@ struct TwoRWConfig {
             "  num_buckets      = %u\n"
             "  queue_depth      = %u\n"
             "  memory_size      = %zu MB\n"
-            "  worker_cpu_start = %d  (workers on CPU %d..%d)\n",
+            "  worker_cpu_start = %d  (workers on CPU %d..%d)\n"
+            "  local_workerring = %s\n",
             numa_node, num_clients, num_workers,
             slots_per_client, num_buckets, queue_depth,
             (size_t)(memory_size >> 20),
-            worker_cpu_start, effective_wcs, effective_wcs + (int)num_workers - 1);
+            worker_cpu_start, effective_wcs, effective_wcs + (int)num_workers - 1,
+            local_workerring ? "yes (DRAM)" : "no (CXL)");
     }
 
     bool validate() const {
@@ -130,8 +136,10 @@ struct SyncThreadState {
     TwoRWLayout*         layout;
     void*                cxl_base;
     std::atomic<bool>*   stop_flag;
-    CXLSpscProducer<KVRequest, QUEUE_CAP>* ring_producers; // [num_workers]
-    CXLSpscConsumer<KVRequest, QUEUE_CAP>* req_consumers;  // [num_clients]
+    CXLSpscProducer<KVRequest, QUEUE_CAP>* ring_producers;       // [num_workers] CXL
+    CXLSpscConsumer<KVRequest, QUEUE_CAP>* req_consumers;        // [num_clients] CXL
+    LocalSpscProducer<KVRequest, QUEUE_CAP>* local_ring_producers; // [num_workers] DRAM
+    bool     use_local_ring = false;   // true → enqueue into local_ring_producers
     uint32_t num_clients;
     uint32_t num_workers;
 
@@ -149,8 +157,11 @@ struct WorkerThreadState {
     void*                cxl_base;
     std::atomic<bool>*   stop_flag;
     DataRegionHeader*    region_meta;    // This worker's DataRegion metadata
-    // Consumer for WorkerRing[worker_id]
+    // Consumer for WorkerRing[worker_id] (CXL path)
     CXLSpscConsumer<KVRequest, QUEUE_CAP>* ring_consumer;
+    // Consumer for local DRAM WorkerRing[worker_id] (--local-workerring path)
+    LocalSpscConsumer<KVRequest, QUEUE_CAP>* local_ring_consumer;
+    bool     use_local_ring = false;   // true → dequeue from local_ring_consumer
     // Producers for ResponseQueue[*][worker_id]
     CXLSpscProducer<KVResponse, QUEUE_CAP>* resp_producers; // [num_clients]
     uint32_t num_clients;
@@ -182,11 +193,16 @@ struct TwoRWContext {
     // SPSC handles — stored on heap, indexed by thread
     CXLSpscProducer<KVRequest,  QUEUE_CAP>* req_producers  = nullptr; // [num_clients]
     CXLSpscConsumer<KVRequest,  QUEUE_CAP>* req_consumers  = nullptr; // [num_clients]
-    CXLSpscProducer<KVRequest,  QUEUE_CAP>* ring_producers = nullptr; // [num_workers]
-    CXLSpscConsumer<KVRequest,  QUEUE_CAP>* ring_consumers = nullptr; // [num_workers]
+    CXLSpscProducer<KVRequest,  QUEUE_CAP>* ring_producers = nullptr; // [num_workers] CXL
+    CXLSpscConsumer<KVRequest,  QUEUE_CAP>* ring_consumers = nullptr; // [num_workers] CXL
     // resp[client_id * num_workers + worker_id]
     CXLSpscProducer<KVResponse, QUEUE_CAP>* resp_producers = nullptr;
     CXLSpscConsumer<KVResponse, QUEUE_CAP>* resp_consumers = nullptr;
+
+    // Local DRAM WorkerRing (used when config.local_workerring == true)
+    LocalSpscQueue<KVRequest,    QUEUE_CAP>* local_rings          = nullptr; // [num_workers]
+    LocalSpscProducer<KVRequest, QUEUE_CAP>* local_ring_producers = nullptr; // [num_workers]
+    LocalSpscConsumer<KVRequest, QUEUE_CAP>* local_ring_consumers = nullptr; // [num_workers]
 
     // UINTR: Response Threads register their fds here
     int*                resp_uintr_fds  = nullptr;  // [num_clients]

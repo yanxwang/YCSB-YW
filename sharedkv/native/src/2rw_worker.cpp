@@ -285,7 +285,10 @@ void two_rw_worker_run(WorkerThreadState* s) {
 
     while (true) {
         KVRequest req;
-        if (s->ring_consumer->dequeue(req)) {
+        bool got = s->use_local_ring
+                   ? s->local_ring_consumer->dequeue(req)
+                   : s->ring_consumer->dequeue(req);
+        if (got) {
             req.t2 = __rdtsc();
 
             // Resolve Pool slot via CXLPtr
@@ -333,8 +336,14 @@ void two_rw_worker_run(WorkerThreadState* s) {
             empty_polls++;
             // Stop when requested AND ring is empty
             if (s->stop_flag->load(std::memory_order_acquire)) {
-                s->ring_consumer->refresh_write_idx();
-                if (s->ring_consumer->is_empty()) break;
+                bool empty;
+                if (s->use_local_ring) {
+                    empty = s->local_ring_consumer->is_empty_fresh();
+                } else {
+                    s->ring_consumer->refresh_write_idx();
+                    empty = s->ring_consumer->is_empty();
+                }
+                if (empty) break;
             }
             _mm_pause();
         }

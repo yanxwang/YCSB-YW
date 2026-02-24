@@ -54,6 +54,7 @@ static void print_usage(const char* prog) {
         "  --queue-depth  N    SPSC queue depth (power-of-2)  (default: 1024)\n"
         "  --mem-gb       N    CXL memory size in GB          (default: 16)\n"
         "  --worker-cpu   N    First CPU for Worker threads   (default: 2+n)\n"
+        "  --local-workerring  WorkerRing on local DRAM instead of CXL\n"
         "\n"
         "Benchmark:\n"
         "  -n <numa>           NUMA node for CXL memory       (default: 2)\n"
@@ -158,6 +159,8 @@ int main(int argc, char** argv) {
             cfg.memory_size = static_cast<uint64_t>(next_int("--mem-gb")) << 30;
         } else if (strcmp(argv[i], "--worker-cpu") == 0) {
             cfg.worker_cpu_start = next_int("--worker-cpu");
+        } else if (strcmp(argv[i], "--local-workerring") == 0) {
+            cfg.local_workerring = true;
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             print_usage(argv[0]);
             return 0;
@@ -217,6 +220,8 @@ int main(int argc, char** argv) {
            cpu_start + static_cast<int>(n) - 1);
     printf("    RespTh:     CPU %d..%d\n", cpu_start + static_cast<int>(n),
            cpu_start + static_cast<int>(2 * n) - 1);
+    printf("  local_workerring: %s\n",
+           cfg.local_workerring ? "yes (DRAM)" : "no (CXL)");
     if (measure_latency) {
         printf("  Mode:         Latency  (%u ops/client, %u total)\n",
                ops_per_client, ops_per_client * n);

@@ -191,16 +191,38 @@ static void* response_thread_fn(void* arg) {
         a->out_total_ticks.reserve(65536);
     }
 
+    // ── Pipelined batch dequeue from ResponseQueues ───────────────────────────
+    // Each dequeue_batch_pipelined(batch, K):
+    //   Phase 1: K clflushopt upfront (non-blocking)
+    //   Phase 2: ONE lfence
+    //   Phase 3: K reads — CPU pipelines CXL fetches in parallel
+    //   → replaces K × (clflushopt + lfence + read) with ~1 CXL RTT for K items
+    //
+    // dequeue_batch_pipelined is lazy (no flush_read_idx inside).
+    // flush_read_idx() is called every RESP_READ_ACK_BATCH responses per queue,
+    // amortising the clwb+sfence write-back cost across many responses.
+    // Safety: RESP_READ_ACK_BATCH ≤ QUEUE_CAP / 4 = 1024 prevents worker stalls.
+    static constexpr uint32_t RESP_DEQUEUE_BATCH  = 8;
+    static constexpr uint32_t RESP_READ_ACK_BATCH = 32;
+
+    KVResponse batch[RESP_DEQUEUE_BATCH];   // stack-allocated, no heap per iter
+    std::vector<uint32_t> lazy_count(m, 0); // flush state per ResponseQueue
+
     while (true) {
         // Drain all m ResponseQueues for this client
         bool drained_any = true;
         while (drained_any) {
             drained_any = false;
             for (uint32_t i = 0; i < m; i++) {
-                KVResponse resp;
                 auto& cons = ctx->resp_consumers[cid * m + i];
-                while (cons.dequeue(resp)) {
-                    // Read t0 before recycling (t0_table entry safe until push)
+                uint64_t count = cons.dequeue_batch_pipelined(batch, RESP_DEQUEUE_BATCH);
+                if (count == 0) continue;
+
+                drained_any = true;
+                for (uint64_t k = 0; k < count; k++) {
+                    const KVResponse& resp = batch[k];
+
+                    // Record latency before recycling slot
                     if (a->measure_latency) {
                         const uint32_t local = resp.slot_id - base_slot;
                         const uint64_t t0    = ctrl.t0_table[local];
@@ -223,7 +245,13 @@ static void* response_thread_fn(void* arg) {
                     } else {
                         failed++;
                     }
-                    drained_any = true;
+                }
+
+                // Lazy flush: clwb+sfence read_idx every RESP_READ_ACK_BATCH items
+                lazy_count[i] += static_cast<uint32_t>(count);
+                if (lazy_count[i] >= RESP_READ_ACK_BATCH) {
+                    cons.flush_read_idx();
+                    lazy_count[i] = 0;
                 }
             }
         }
@@ -245,6 +273,11 @@ static void* response_thread_fn(void* arg) {
         } else {
             _mm_pause();
         }
+    }
+
+    // Final flush: commit all pending read_idx to CXL so Workers can reclaim slots
+    for (uint32_t i = 0; i < m; i++) {
+        ctx->resp_consumers[cid * m + i].flush_read_idx();
     }
 
     if (uintr_ok) {
