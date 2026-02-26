@@ -5,9 +5,9 @@
 //   sharedkv_2rw_benchmark -w <workload> [options]
 //
 // CPU Layout (must not overlap):
-//   CPU 0                         : Synchronizer
-//   CPU 1                         : Poller
-//   CPU worker_cpu .. +m-1        : Workers      (default: 2+n)
+//   CPU 0                         : Poller
+//   CPU 1 .. s                    : SN_0 .. SN_{s-1}  (s = num_synchronizers)
+//   CPU worker_cpu .. +m-1        : Workers      (default: 1+s)
 //   CPU cpu_start .. +n-1         : Request Threads  (one per client, dedicated)
 //   CPU cpu_start+n .. +2n-1      : Response Threads (one per client, dedicated)
 //
@@ -41,31 +41,32 @@ static void signal_handler(int) {
 
 static void print_usage(const char* prog) {
     printf(
-        "Usage: %s -w <workload> [options]\n"
+        "Usage: %s --workload <workload> [options]\n"
         "\n"
         "Required:\n"
-        "  -w <name>           Workload name (workloada / workloadb / workloadc)\n"
+        "  --workload <name>           Workload name (workloada / workloadb / workloadc)\n"
         "\n"
         "2RW Architecture:\n"
-        "  --num-clients  N    Request/Response thread pairs  (default: 4)\n"
-        "  --num-workers  N    Worker threads                 (default: 8)\n"
-        "  --slots        N    Pool slots per client          (default: 1024)\n"
-        "  --num-buckets  N    Hash table buckets (power-of-2)(default: 1048576)\n"
-        "  --queue-depth  N    SPSC queue depth (power-of-2)  (default: 1024)\n"
-        "  --mem-gb       N    CXL memory size in GB          (default: 16)\n"
-        "  --worker-cpu   N    First CPU for Worker threads   (default: 2+n)\n"
-        "  --local-workerring  WorkerRing on local DRAM instead of CXL\n"
+        "  --num-clients       N    Request/Response thread pairs  (default: 4)\n"
+        "  --num-workers       N    Worker threads                 (default: 8)\n"
+        "  --num-synchronizers N    Synchronizer threads (m div s)  (default: 1)\n"
+        "  --slots             N    Pool slots per client          (default: 1024)\n"
+        "  --num-buckets       N    Hash table buckets (power-of-2)(default: 1048576)\n"
+        "  --queue-depth       N    SPSC queue depth (power-of-2)  (default: 1024)\n"
+        "  --mem-gb            N    CXL memory size in GB          (default: 16)\n"
+        "  --worker-cpu        N    First CPU for Worker threads   (default: 1+s)\n"
+        "  --local-workerring       WorkerRing on local DRAM instead of CXL\n"
         "\n"
         "Benchmark:\n"
-        "  -n <numa>           NUMA node for CXL memory       (default: 2)\n"
-        "  -s <cpu>            Starting CPU for client threads (default: 14)\n"
-        "  -t <seconds>        Throughput test duration        (default: 10)\n"
-        "  -l                  Latency mode (fixed ops, not timed)\n"
-        "  -o <ops>            Ops per client in latency mode  (default: 100000)\n"
+        "  --numa <numa>           NUMA node for CXL memory       (default: 2)\n"
+        "  --clients-start <cpu>            Starting CPU for client threads (default: 14)\n"
+        "  --duration <seconds>        Throughput test duration        (default: 10)\n"
+        "  --latency                  Latency mode (fixed ops, not timed)\n"
+        "  --operations-per-client <ops>            Ops per client in latency mode  (default: 100000)\n"
         "\n"
         "Example:\n"
-        "  %s -w workloadc --num-clients 4 --num-workers 8 --worker-cpu 2 -s 18 -t 30\n"
-        "  %s -w workloada --num-clients 4 --num-workers 8 --worker-cpu 2 -s 18 -l -o 100000\n",
+        "  %s --workload workloadc --num-clients 4 --num-workers 8 --worker-cpu 2 --clients-start 18 --duration 30\n"
+        "  %s --workload workloada --num-clients 4 --num-workers 8 --worker-cpu 2 --clients-start 18 --latency --operations-per-client 100000\n",
         prog, prog, prog);
 }
 
@@ -87,6 +88,14 @@ static void print_phase_result(const char* phase, const PhaseResult& r,
     printf("  Failed:       %lu\n",  r.failed_ops);
     printf("  Duration:     %.3f s\n",  secs);
     printf("  Throughput:   %.0f ops/s\n", tput);
+
+    if (r.num_synchronizers > 1 && !r.sn_ops.empty()) {
+        printf("  Per-SN throughput:\n");
+        for (uint32_t k = 0; k < r.num_synchronizers; k++) {
+            double sn_tput = secs > 0 ? r.sn_ops[k] / secs : 0;
+            printf("    SN%u: %lu ops  (%.0f ops/s)\n", k, r.sn_ops[k], sn_tput);
+        }
+    }
 
     if (measure_latency && !r.total_ticks.empty()) {
         print_latency_decomposed(r, tsc_mhz);
@@ -118,7 +127,8 @@ int main(int argc, char** argv) {
     cfg.num_buckets      = 1 << 20;   // 1M buckets
     cfg.queue_depth      = 1024;
     cfg.memory_size      = 16ULL << 30;
-    cfg.worker_cpu_start = -1;        // -1 = auto: 2 + num_clients
+    cfg.num_synchronizers = 1;
+    cfg.worker_cpu_start = -1;        // -1 = auto: 1 + num_synchronizers
 
     // ---- Argument Parsing ----
     for (int i = 1; i < argc; i++) {
@@ -133,22 +143,24 @@ int main(int argc, char** argv) {
             return static_cast<uint32_t>(next_int(name));
         };
 
-        if (strcmp(argv[i], "-w") == 0 && i + 1 < argc) {
+        if (strcmp(argv[i], "--workload") == 0 && i + 1 < argc) {
             workload_name = argv[++i];
-        } else if (strcmp(argv[i], "-n") == 0) {
-            cfg.numa_node = next_int("-n");
-        } else if (strcmp(argv[i], "-s") == 0) {
-            cpu_start = next_int("-s");
-        } else if (strcmp(argv[i], "-t") == 0) {
-            duration_sec = next_int("-t");
-        } else if (strcmp(argv[i], "-l") == 0) {
+        } else if (strcmp(argv[i], "--numa") == 0) {
+            cfg.numa_node = next_int("--numa");
+        } else if (strcmp(argv[i], "--clients-start") == 0) {
+            cpu_start = next_int("--clients-start");
+        } else if (strcmp(argv[i], "--duration") == 0) {
+            duration_sec = next_int("--duration");
+        } else if (strcmp(argv[i], "--latency") == 0) {
             measure_latency = true;
-        } else if (strcmp(argv[i], "-o") == 0) {
-            ops_per_client = next_u32("-o");
+        } else if (strcmp(argv[i], "--operations-per-client") == 0) {
+            ops_per_client = next_u32("--operations-per-client");
         } else if (strcmp(argv[i], "--num-clients") == 0) {
             cfg.num_clients = next_u32("--num-clients");
         } else if (strcmp(argv[i], "--num-workers") == 0) {
             cfg.num_workers = next_u32("--num-workers");
+        } else if (strcmp(argv[i], "--num-synchronizers") == 0) {
+            cfg.num_synchronizers = next_u32("--num-synchronizers");
         } else if (strcmp(argv[i], "--slots") == 0) {
             cfg.slots_per_client = next_u32("--slots");
         } else if (strcmp(argv[i], "--num-buckets") == 0) {
@@ -179,48 +191,54 @@ int main(int argc, char** argv) {
 
     const uint32_t n = cfg.num_clients;
     const uint32_t m = cfg.num_workers;
+    const uint32_t s = cfg.num_synchronizers;
 
-    // Effective worker CPU start (resolve -1 = auto)
+    // Effective worker CPU start (resolve -1 = auto: 1 + s)
     const int w_cpu = (cfg.worker_cpu_start < 0)
-                      ? static_cast<int>(2 + n)
+                      ? static_cast<int>(1 + s)
                       : cfg.worker_cpu_start;
 
     // ---- CPU Layout Validation ----
     int worker_max_cpu = w_cpu + static_cast<int>(m) - 1;
     int bench_min_cpu  = cpu_start;
-    if (bench_min_cpu <= worker_max_cpu || w_cpu <= 1) {
+    if (bench_min_cpu <= worker_max_cpu || w_cpu <= static_cast<int>(s)) {
         fprintf(stderr,
             "WARNING: Possible CPU overlap detected.\n"
+            "  Poller:   CPU 0\n"
+            "  SNs:      CPU 1..%u\n"
             "  Workers:  CPU %d..%d\n"
             "  Clients:  CPU %d..%d (ReqTh) / %d..%d (RespTh)\n"
-            "  Recommended: -s %d or higher, --worker-cpu >= 2.\n",
+            "  Recommended: -s %d or higher, --worker-cpu >= %u.\n",
+            s,
             w_cpu, worker_max_cpu,
             cpu_start, cpu_start + (int)n - 1,
             cpu_start + (int)n, cpu_start + (int)(2*n) - 1,
-            worker_max_cpu + 1);
+            worker_max_cpu + 1, s + 1);
     }
 
     // ---- Print Config ----
     printf("==============================================\n");
     printf("SharedKV 2RW YCSB Benchmark\n");
     printf("==============================================\n");
-    printf("  Workload:         %s\n",   workload_name);
-    printf("  NUMA node:        %d\n",   cfg.numa_node);
-    printf("  num_clients (n):  %u\n",   n);
-    printf("  num_workers (m):  %u\n",   m);
-    printf("  slots_per_client: %u\n",   cfg.slots_per_client);
-    printf("  num_buckets:      %u\n",   cfg.num_buckets);
-    printf("  queue_depth:      %u\n",   cfg.queue_depth);
-    printf("  memory_size:      %lu GB\n", cfg.memory_size >> 30);
+    printf("  Workload:              %s\n",   workload_name);
+    printf("  NUMA node:             %d\n",   cfg.numa_node);
+    printf("  num_clients (n):       %u\n",   n);
+    printf("  num_workers (m):       %u\n",   m);
+    printf("  num_synchronizers (s): %u  (workers per SN: %u)\n", s, m / s);
+    printf("  slots_per_client:      %u\n",   cfg.slots_per_client);
+    printf("  num_buckets:           %u\n",   cfg.num_buckets);
+    printf("  queue_depth:           %u\n",   cfg.queue_depth);
+    printf("  memory_size:           %lu GB\n", cfg.memory_size >> 30);
     printf("  CPU layout:\n");
-    printf("    Sync:       CPU 0\n");
-    printf("    Poller:     CPU 1\n");
+    printf("    Poller:     CPU 0\n");
+    for (uint32_t k = 0; k < s; k++)
+        printf("    SN%u:        CPU %u\n", k, k + 1);
     printf("    Workers:    CPU %d..%d\n", w_cpu, w_cpu + (int)m - 1);
     printf("    ReqTh:      CPU %d..%d\n", cpu_start,
            cpu_start + static_cast<int>(n) - 1);
     printf("    RespTh:     CPU %d..%d\n", cpu_start + static_cast<int>(n),
            cpu_start + static_cast<int>(2 * n) - 1);
-    printf("  local_workerring: %s\n",
+    printf("  local_workerring:      %s\n",
            cfg.local_workerring ? "yes (DRAM)" : "no (CXL)");
     if (measure_latency) {
         printf("  Mode:         Latency  (%u ops/client, %u total)\n",

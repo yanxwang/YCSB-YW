@@ -152,6 +152,7 @@ static void* response_thread_fn(void* arg) {
     TwoRWContext* const ctx       = a->ctx;
     const uint32_t      cid       = a->client_id;
     const uint32_t      m         = ctx->config.num_workers;
+    const uint32_t      s         = a->num_synchronizers;
     const uint32_t      base_slot = cid * ctx->config.slots_per_client;
     ClientControl&      ctrl      = *a->ctrl;
 
@@ -189,6 +190,13 @@ static void* response_thread_fn(void* arg) {
         a->out_stage1_ticks.reserve(65536);
         a->out_stage2_ticks.reserve(65536);
         a->out_total_ticks.reserve(65536);
+    }
+    if (s > 1) {
+        a->out_sn_ops.assign(s, 0);
+        if (a->measure_latency) {
+            a->out_sn_stage1_ticks.resize(s);
+            a->out_sn_total_ticks.resize(s);
+        }
     }
 
     // ── Pipelined batch dequeue from ResponseQueues ───────────────────────────
@@ -234,7 +242,16 @@ static void* response_thread_fn(void* arg) {
                             a->out_stage1_ticks.push_back(t2 - t1);
                             a->out_stage2_ticks.push_back(t3 - t2);
                             a->out_total_ticks.push_back(t3 - t0);
+                            if (s > 1) {
+                                const uint32_t sn = static_cast<uint32_t>(resp.gsn % s);
+                                a->out_sn_stage1_ticks[sn].push_back(t2 - t1);
+                                a->out_sn_total_ticks[sn].push_back(t3 - t0);
+                            }
                         }
+                    }
+                    // Per-SN op count (always tracked when s > 1)
+                    if (s > 1) {
+                        a->out_sn_ops[static_cast<uint32_t>(resp.gsn % s)]++;
                     }
 
                     // Recycle slot_id → FreeIDQueue (unblocks Request Thread)
@@ -346,15 +363,16 @@ PhaseResult run_2rw_phase(
         req_args[j].barrier         = &barrier;
         req_args[j].ctrl            = &ctrl[j];
 
-        resp_args[j].ctx             = ctx;
-        resp_args[j].client_id       = j;
-        resp_args[j].cpu_id          = cpu_start + static_cast<int>(n) + static_cast<int>(j);
-        resp_args[j].measure_latency = measure_latency;
-        resp_args[j].should_stop     = &stop_flag;
-        resp_args[j].barrier         = &barrier;
-        resp_args[j].ctrl            = &ctrl[j];
-        resp_args[j].out_completed   = 0;
-        resp_args[j].out_failed      = 0;
+        resp_args[j].ctx               = ctx;
+        resp_args[j].client_id         = j;
+        resp_args[j].cpu_id            = cpu_start + static_cast<int>(n) + static_cast<int>(j);
+        resp_args[j].measure_latency   = measure_latency;
+        resp_args[j].should_stop       = &stop_flag;
+        resp_args[j].barrier           = &barrier;
+        resp_args[j].ctrl              = &ctrl[j];
+        resp_args[j].out_completed     = 0;
+        resp_args[j].out_failed        = 0;
+        resp_args[j].num_synchronizers = ctx->config.num_synchronizers;
     }
 
     // Launch all threads (response threads first so UINTR fds are ready early)
@@ -395,6 +413,16 @@ PhaseResult run_2rw_phase(
     PhaseResult result{};
     result.duration_usec = t_end - t_start;
 
+    const uint32_t s = ctx->config.num_synchronizers;
+    result.num_synchronizers = s;
+    if (s > 1) {
+        result.sn_ops.assign(s, 0);
+        if (measure_latency) {
+            result.sn_stage1_ticks.resize(s);
+            result.sn_total_ticks.resize(s);
+        }
+    }
+
     for (uint32_t j = 0; j < n; j++) {
         result.total_ops  += resp_args[j].out_completed + resp_args[j].out_failed;
         result.failed_ops += resp_args[j].out_failed;
@@ -407,6 +435,16 @@ PhaseResult run_2rw_phase(
             append(result.stage1_ticks, resp_args[j].out_stage1_ticks);
             append(result.stage2_ticks, resp_args[j].out_stage2_ticks);
             append(result.total_ticks,  resp_args[j].out_total_ticks);
+            if (s > 1) {
+                for (uint32_t k = 0; k < s; k++) {
+                    append(result.sn_stage1_ticks[k], resp_args[j].out_sn_stage1_ticks[k]);
+                    append(result.sn_total_ticks[k],  resp_args[j].out_sn_total_ticks[k]);
+                }
+            }
+        }
+        if (s > 1) {
+            for (uint32_t k = 0; k < s; k++)
+                result.sn_ops[k] += resp_args[j].out_sn_ops[k];
         }
         delete[] ctrl[j].t0_table;
     }
@@ -521,6 +559,21 @@ void print_latency_decomposed(const PhaseResult& r, uint64_t tsc_mhz) {
            "t2→t3 Worker execution",  s2.avg, s2.p50, s2.p99, s2.max);
     printf("  %-28s  %8.2f  %8.2f  %8.2f  %8.2f\n",
            "t0→t3 end-to-end",        st.avg, st.p50, st.p99, st.max);
+
+    // Per-SN breakdown (shown only when s > 1 and latency was measured)
+    if (r.num_synchronizers > 1 && !r.sn_stage1_ticks.empty()) {
+        printf("\n  Per-SN Latency (s=%u):\n", r.num_synchronizers);
+        printf("  %-6s  %-28s  %8s  %8s  %8s  %8s\n",
+               "SN", "Stage", "avg(us)", "p50", "p99", "max");
+        for (uint32_t k = 0; k < r.num_synchronizers; k++) {
+            Stats s1k = compute(r.sn_stage1_ticks[k]);
+            Stats stk = compute(r.sn_total_ticks[k]);
+            printf("  SN%-4u  %-28s  %8.2f  %8.2f  %8.2f  %8.2f\n",
+                   k, "t1→t2 Sync dispatch", s1k.avg, s1k.p50, s1k.p99, s1k.max);
+            printf("  SN%-4u  %-28s  %8.2f  %8.2f  %8.2f  %8.2f\n",
+                   k, "t0→t3 end-to-end", stk.avg, stk.p50, stk.p99, stk.max);
+        }
+    }
 }
 
 } // namespace TwoRW

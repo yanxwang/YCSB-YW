@@ -1,0 +1,389 @@
+SharedKV Architecture Specification: Unified Block-based Zero-Copy Store
+Version: 2.0 (Design-Complete / Implementation-Ready)
+Date: 2026-02-26
+Status: Confirmed spec after full design review. All structs are final.
+
+===============================================================================
+0. 动机：消除双重 CXL 写
+===============================================================================
+旧架构 (v1.3/v1.4) 中，PUT/UPDATE 路径存在两次 CXL 写：
+
+  [RT]    写 KVPoolSlot (CXL Pool 区)
+                ↓ KVRequest{slot_id}
+  [Worker] memcpy KVPoolSlot → CXLNode (CXL DataRegion 区)  ← 浪费 CXL 带宽
+
+新架构通过"所有权转移"消除第二次拷贝：RT 写入的 UnifiedBlock 直接被
+Worker 链入哈希表，物理内存永不移动。
+
+===============================================================================
+1. 核心数据结构
+===============================================================================
+
+-------------------------------------------------------------------------------
+1.1 UnifiedBlock（取代 KVPoolSlot + CXLNode）
+-------------------------------------------------------------------------------
+物理单元：固定 2KB (2048B) 分块，存放于 CXL 的 UnifiedBlockPool 区。
+双重身份：Block 先作为 RT 的请求缓冲区，PUT/UPDATE 完成后直接成为哈希表
+          的持久数据节点，物理位置不移动。
+
+寻址：uint32_t block_id（控制平面），物理地址计算：
+        char* ptr = cxl_base + (uint64_t)block_id * 2048ULL;
+      16GB CXL = 8M 块（23 bit），1TB CXL = 512M 块（29 bit），均在 uint32_t 范围内。
+      uint32_t 上限约 8TB（32 bit = 4B 块 × 2KB = 8TB），足够未来规划。
+      x86-64 零扩展特性保证 uint32_t → uint64_t 的乘法无运行时开销。
+
+next_block_id 使用 uint64_t 的原因：
+      该字段是哈希链表持久指针，驻留于 CXL 数据节点。Header 内因对齐本来
+      会产生 padding，uint64_t 不增加额外空间代价，且未来 CXL 扩展至 16TB+
+      时无需修改持久化数据格式。控制平面（KVRequest/KVResponse）的 block_id
+      字段仍用 uint32_t。
+
+字段布局（自然对齐，无 __attribute__((packed))）：
+
+  struct alignas(64) UnifiedBlock {
+      // --- Header (64B) ---
+      // [0..7]   next_block_id: 哈希链表指针 (uint64_t, 0 = 链尾)
+      //          uint64_t 用于未来 CXL 扩展兼容性；控制平面用 uint32_t
+      // [8..11]  key_hash: RT 预计算，Worker 快速比较时无需读 data[]
+      // [12..13] key_len
+      // [14..15] 隐式 pad (val_len uint32_t 需 4B 对齐)
+      // [16..19] val_len
+      // [20]     is_external: 1 = Value 超出内联容量，data[] 存外部 CXL offset
+      // [21..23] 隐式 pad (gsn uint64_t 需 8B 对齐)
+      // [24..31] gsn: Worker 从 KVRequest 写入，用于线性一致性保证
+      // [32..39] t0: RT 填完数据并 _mm_sfence() 后用 __rdtscp() 打点
+      // [40..47] t1: RT 将 KVRequest 入队前用 __rdtscp() 打点
+      // [48..55] t2: Synchronizer 入 WorkerRing 前用 __rdtscp() 打点
+      // [56..63] t3: Worker 完成操作后用 __rdtscp() 打点
+      uint64_t next_block_id;
+      uint32_t key_hash;
+      uint16_t key_len;
+      // [2B implicit pad]
+      uint32_t val_len;
+      uint8_t  is_external;
+      // [3B implicit pad]
+      uint64_t gsn;
+      uint64_t t0, t1, t2, t3;
+
+      // --- Data (1984B) ---
+      // layout: key_len bytes of key || val_len bytes of value
+      // 当 is_external == 1 时: data[0..7] 存 uint64_t CXL offset（外部 Value）
+      char data[];
+  };
+  static_assert(sizeof(UnifiedBlock) == 2048);
+  static_assert(offsetof(UnifiedBlock, data) == 64);
+
+内联阈值：data[] = 1984B，key 最大 128B，可内联 Value 上限约 1856B。
+          YCSB 默认 Value = 1000B，完全内联，Spillover 路径不触发。
+
+Sentinel：next_block_id == 0 表示链尾；block_id 0 永久保留不参与分配。
+
+-------------------------------------------------------------------------------
+1.2 KVRequest（控制平面，64B，Synchronizer 透传）
+-------------------------------------------------------------------------------
+变更：slot_id (uint32_t) → block_id (uint32_t，语义相同）
+      _pad0 (uint32_t) → op_type (uint8_t) + _pad0 (uint8_t[3])，总大小不变。
+
+  struct alignas(64) KVRequest {
+      uint32_t worker_id;    // 目标 Worker（RT 预计算）
+      uint32_t block_id;     // UnifiedBlock ID（原 slot_id）
+      uint64_t gsn;          // 由 Synchronizer 赋值
+      uint32_t client_id;    // 回包路由：哪个 Response Thread
+      uint8_t  op_type;      // OpType enum: GET/PUT/UPDATE/DEL（新增）
+      uint8_t  _pad0[3];     // 原 _pad0 (uint32_t) 拆分
+      uint64_t t1;           // RT 入 RequestQueue 前 __rdtscp() 打点
+      uint64_t t2;           // Synchronizer 入 WorkerRing 前 __rdtscp() 打点
+      char     padding[24];
+  };
+  static_assert(sizeof(KVRequest) == 64);
+
+  // 字段偏移（自然对齐）：
+  // [0..3]   worker_id
+  // [4..7]   block_id
+  // [8..15]  gsn
+  // [16..19] client_id
+  // [20]     op_type
+  // [21..23] _pad0
+  // [24..31] t1
+  // [32..39] t2
+  // [40..63] padding
+
+-------------------------------------------------------------------------------
+1.3 KVResponse（控制平面，64B）
+-------------------------------------------------------------------------------
+变更：
+  - slot_id (uint32_t) → block_id_a + block_id_b（两个 uint32_t，sentinel 0 = 无效）
+  - gsn (uint64_t) → sn_id (uint8_t)：仅用于 per-SN 归因（见附注），1B 足够
+  - 新增 t0（Worker 从 UnifiedBlock[id_new].t0 复制，消除 ctrl->t0_table 侧表）
+  - 新增 op_type（供 Response Thread 决策字段语义）
+
+  struct alignas(64) KVResponse {
+      uint16_t status;       // Status enum
+      uint8_t  op_type;      // OpType enum（新增）
+      uint8_t  sn_id;        // 处理该请求的 Synchronizer ID（原 gsn，仅用于归因）
+      uint32_t block_id_a;   // 主回收块（0 = 无需回收）
+      uint32_t block_id_b;   // 次回收块，DEL 专用（0 = 无需回收）
+      uint32_t val_len;      // GET only，else 0
+      uint64_t val_addr;     // GET only: cxl_base + id_data×2048 + 64 + key_len
+      uint32_t _pad0;
+      uint32_t _pad1;
+      uint64_t t0;           // Worker 从 UnifiedBlock[id_new].t0 复制（新增）
+      uint64_t t1;           // from KVRequest.t1
+      uint64_t t2;           // from KVRequest.t2
+      uint64_t t3;           // Worker 完成操作后 __rdtscp() 打点
+  };
+  static_assert(sizeof(KVResponse) == 64);
+
+  // 字段偏移（自然对齐）：
+  // [0..1]   status
+  // [2]      op_type
+  // [3]      sn_id
+  // [4..7]   block_id_a
+  // [8..11]  block_id_b
+  // [12..15] val_len
+  // [16..23] val_addr
+  // [24..27] _pad0
+  // [28..31] _pad1
+  // [32..39] t0
+  // [40..47] t1
+  // [48..55] t2
+  // [56..63] t3
+
+各 op 类型下 block_id_a / block_id_b / val_addr 语义：
+
+  ┌─────────────────────────────┬────────────┬────────────┬──────────────────────┐
+  │ 操作                        │ block_id_a │ block_id_b │ val_addr / val_len   │
+  ├─────────────────────────────┼────────────┼────────────┼──────────────────────┤
+  │ PUT/UPDATE（key 已存在）    │ id_old     │ 0          │ 0 / 0                │
+  │ PUT/UPDATE（key 不存在）    │ 0          │ 0          │ 0 / 0                │
+  │ GET（成功）                 │ id_req     │ 0          │ val_addr / val_len   │
+  │ GET（NOT_FOUND）            │ id_req     │ 0          │ 0 / 0                │
+  │ DEL（key 已存在）           │ id_cmd     │ id_data    │ 0 / 0                │
+  │ DEL（key 不存在）           │ id_cmd     │ 0          │ 0 / 0                │
+  └─────────────────────────────┴────────────┴────────────┴──────────────────────┘
+
+Response Thread 统一回收逻辑（无分支，O(1)）：
+  if (resp.block_id_a != 0) free_block_queue[cid].push(resp.block_id_a);
+  if (resp.block_id_b != 0) free_block_queue[cid].push(resp.block_id_b);
+
+附注：per-SN 归因（sn_id 字段的用途）
+  当 num_synchronizers (s) > 1 时，多个 SN 线程跑在不同 CPU 核（或 NUMA node）。
+  sn_id 使 Response Thread 能分别统计每个 SN 的 Stage1 延迟（t2-t1），
+  用于检测 NUMA 效应或 SN 间负载不均。默认配置 s=1 时此字段无意义，
+  相关统计代码由 if (s > 1) 保护。Worker 填法：
+    resp.sn_id = static_cast<uint8_t>(worker_id / workers_per_sn);
+
+===============================================================================
+2. Block ID 管理：两级分配体系
+===============================================================================
+
+2.1 全局块池（Global Block Pool）
+- 驻留：CXL 元数据区的位图（Bitmap），大小 = total_blocks / 8 字节。
+         1TB CXL / 2KB = 512M 块 → 64MB bitmap。
+- 操作：AllocChunk(256) 和 FreeChunk(ids[], 256)。
+- 机制：以 256 位（32B = 4 × uint64_t）为一组，用 lock bts / cmpxchg 批量操作。
+- 访问者：仅 Request Thread（Local Cache 耗尽或溢出时），跨核原子操作被摊薄。
+
+2.2 本地块缓存（Local Block Cache）per Request Thread
+组成：两层
+  ① local_stack[1024]：RT 私有 LIFO 栈，仅 RT 自身读写，零并发冲突。
+  ② FreeBlockQueue（SPSC）：Response Thread → RT 的回收通道（原 FreeIDQueue
+     改名，结构不变，slot_id 语义改为 block_id）。
+
+RT 获取 block_id 的优先级：
+  1. local_stack 非空 → pop（纯本地，最快，无 CXL 访问）
+  2. local_stack 空 & FreeBlockQueue 非空 → 批量 drain 入 local_stack，pop
+  3. 以上均空 → AllocChunk(256) 从 Global Bitmap → 入 local_stack，pop
+
+RT 归还 block_id 的触发：
+  local_stack 内 ID 超过 768 → FreeChunk(256) 归还 Global Bitmap
+
+Response Thread 回收 block_id：
+  将 block_id_a / block_id_b（非零者）push 到 FreeBlockQueue[client_id]。
+  RT 下次从 FreeBlockQueue drain 时取回，无需 RT 主动轮询。
+
+===============================================================================
+3. 各操作的完整数据流
+===============================================================================
+
+3.1 PUT / UPDATE（零拷贝核心路径）
+  RT:
+    id_new = local_cache.pop()
+    block  = (UnifiedBlock*)(cxl_base + (uint64_t)id_new * 2048ULL)
+    block->key_hash    = fnv1a(key)
+    block->key_len     = klen
+    block->val_len     = vlen
+    block->is_external = 0
+    block->t0          = __rdtscp(&aux)
+    memcpy(block->data, key, klen)
+    memcpy(block->data + klen, value, vlen)
+    _mm_sfence()
+    submit KVRequest{block_id=id_new, op_type=PUT/UPDATE, client_id=j, t1=__rdtscp(&aux)}
+
+  Worker:
+    _mm_lfence()   // 遍历链表前保证读一致性
+    遍历 bucket 链表，按 key_hash 初筛，再按 key 精确匹配，定位 id_old（无则 0）
+    if id_old != 0:
+        block_new->next_block_id = block_old->next_block_id
+    else:
+        block_new->next_block_id = 0
+    更新前驱节点的 next_block_id 或 bucket->head_block_id → id_new
+    _mm_sfence()   // 链表更新对后续读者可见
+    block_new->gsn = req.gsn
+    send KVResponse{op_type=PUT/UPDATE, sn_id=...,
+                    block_id_a=id_old, block_id_b=0,
+                    t0=block_new->t0, t1=req.t1, t2=req.t2, t3=__rdtscp(&aux)}
+
+  Response Thread:
+    if resp.block_id_a != 0: free_block_queue[j].push(id_old)
+    （id_new 已成为持久数据节点，不回收）
+
+3.2 GET（请求块用后即回收）
+  RT:
+    id_req = local_cache.pop()
+    block  = (UnifiedBlock*)(cxl_base + (uint64_t)id_req * 2048ULL)
+    block->key_hash = fnv1a(key)
+    block->key_len  = klen
+    block->t0       = __rdtscp(&aux)
+    memcpy(block->data, key, klen)
+    _mm_sfence()
+    submit KVRequest{block_id=id_req, op_type=GET, client_id=j, t1=__rdtscp(&aux)}
+
+  Worker:
+    _mm_lfence()
+    找到 id_found（key 匹配）或 NOT_FOUND
+    val_addr = cxl_base + (uint64_t)id_found * 2048ULL + 64 + key_len  (is_external==0 时)
+    send KVResponse{op_type=GET, sn_id=...,
+                    block_id_a=id_req, block_id_b=0,
+                    val_addr=val_addr, val_len=vlen,
+                    t0=block_req->t0, t1=req.t1, t2=req.t2, t3=__rdtscp(&aux)}
+
+  Response Thread:
+    free_block_queue[j].push(resp.block_id_a)  // id_req 立即回收
+    应用层从 resp.val_addr 读值（零拷贝）
+
+3.3 DEL（双块回收）
+  RT: 同 GET，填 key，提交 KVRequest{block_id=id_cmd, op_type=DEL}
+
+  Worker:
+    _mm_lfence()
+    找到 id_data（key 匹配）或 NOT_FOUND
+    if id_data != 0: 摘除链表节点（更新前驱 next_block_id 或 bucket->head_block_id）
+                     _mm_sfence()
+    send KVResponse{op_type=DEL, sn_id=...,
+                    block_id_a=id_cmd, block_id_b=id_data,
+                    t0=block_cmd->t0, t1=req.t1, t2=req.t2, t3=__rdtscp(&aux)}
+
+  Response Thread:
+    free_block_queue[j].push(resp.block_id_a)   // id_cmd 回收
+    if resp.block_id_b != 0:
+        if block_data->is_external: spillover_free(client_id, block_data->data)
+        free_block_queue[j].push(resp.block_id_b)  // id_data 回收
+
+===============================================================================
+4. 超长 Value 处理（Spillover Region）
+===============================================================================
+
+触发条件：val_len > data[] 可用空间（约 1856B，取决于 key_len）。
+          YCSB 默认 1000B Value 不触发，正常 benchmark 此路径不执行。
+
+4.1 RT 写入路径（is_external = 1）
+  a. 从本 client 的 SpilloverRegion 申请空间，写入 Value。
+  b. 将外部 CXL offset（uint64_t）写入 block->data[0..7]。
+  c. 设置 block->is_external = 1，block->val_len = 实际 Value 大小。
+
+4.2 SpilloverRegion 设计
+- 布局：per-client 独立分段，无跨 client 并发，RT 独占访问分配器。
+- 分配：简单 bump allocator（RT 私有计数器，无原子操作，极低 overhead）。
+- 回收：Response Thread 处理 id_old.is_external==1 时：
+    ① 从 block->data[0..7] 读出外部 CXL offset。
+    ② 推入 per-client SpilloverFreeList（简单 LIFO 链表）。
+    ③ RT 下次分配时优先从 SpilloverFreeList 取，无则 bump 分配。
+- 大小建议：total_cxl × 20% / n_clients，或固定 256MB per client。
+
+===============================================================================
+5. 延迟分析时间戳（消除 t0_table 侧表）
+===============================================================================
+
+t0：RT 填充完 UnifiedBlock 并 _mm_sfence() 后用 __rdtscp() 打点，写入 block->t0。
+    Worker 将 block[id_new]->t0 复制到 KVResponse.t0。
+    Response Thread 直接从 resp.t0 读取，ctrl->t0_table 侧表可完全删除。
+
+t1：RT 将 KVRequest 入 RequestQueue 前 __rdtscp() 打点，存于 KVRequest.t1，
+    Synchronizer 透传，Worker 复制到 KVResponse.t1。
+
+t2：Synchronizer 入 WorkerRing 前 __rdtscp() 打点，存于 KVRequest.t2，
+    Worker 复制到 KVResponse.t2。
+
+t3：Worker 完成操作后 __rdtscp() 打点，存于 KVResponse.t3。
+
+阶段分解（四个时间戳全在 KVResponse 中，无需额外查表）：
+  Stage 0 (t1-t0): RT 填数据 → 入 RequestQueue
+  Stage 1 (t2-t1): Synchronizer 调度延迟
+  Stage 2 (t3-t2): Worker 执行时间
+  End-to-end (t3-t0): 全链路
+
+===============================================================================
+6. CXL 内存布局（TwoRWLayout 变更）
+===============================================================================
+
+旧布局：
+  [Header][HashTable][DataRegionMeta][Pool][ReqQueue][WorkerRing][RespQueue][DataRegion]
+
+新布局：
+  [Header][HashTable][GlobalIDMap][UnifiedBlockPool][SpilloverRegion]
+  [ReqQueue][WorkerRing][RespQueue]
+
+变更说明：
+  删除：Pool 区（KVPoolSlot 数组），DataRegion 区（CXLNode 存储），DataRegionMeta
+  新增：GlobalIDMap（位图，total_blocks/8 字节，CXL 元数据区）
+         UnifiedBlockPool（flat 数组，每项 2048B，起始地址 2048B 对齐）
+         SpilloverRegion（n_clients 个分段，每段固定大小）
+
+CXLBucket 字段变更：
+  旧: uint64_t head_offset;    // 字节偏移，8B
+  新: uint32_t head_block_id;  // block_id，0 = 空桶
+      uint32_t _pad;           // 保持结构体 8B，对齐不变
+
+===============================================================================
+7. 内存屏障要求
+===============================================================================
+
+RT（写 UnifiedBlock 后）：
+  _mm_sfence() — 填充 block 完成后、提交 KVRequest 前。
+  确保 block 内容（key/value/metadata）对 Worker 可见。
+
+Worker（读链表前）：
+  _mm_lfence() — 遍历 bucket 链表前。
+  确保读到最新的 next_block_id 链表指针。
+
+Worker（更新链表后）：
+  _mm_sfence() — 更新 head_block_id 或前驱 next_block_id 后。
+  确保新节点对后续并发读者（其他 Worker 或 GET 路径）可见。
+
+===============================================================================
+8. 旧组件对照：删除 / 重命名 / 替换
+===============================================================================
+
+  删除：
+    KVPoolSlot 结构体 及 Pool 内存区
+    CXLNode 结构体 及 DataRegion 内存区
+    DataRegionHeader 结构体 及 DataRegionMeta 内存区
+    ctrl->t0_table 侧表（及其初始化/访问代码）
+
+  重命名/改型：
+    FreeIDQueue          → FreeBlockQueue（结构不变，slot_id 语义改为 block_id）
+    KVRequest.slot_id    → KVRequest.block_id（uint32_t，同类型）
+    KVRequest._pad0      → KVRequest.op_type + _pad0[3]
+    KVResponse.slot_id   → KVResponse.block_id_a + block_id_b
+    KVResponse.gsn       → KVResponse.sn_id（uint64_t 降为 uint8_t）
+    KVResponse.padding   → KVResponse.t0 + _pad0 + _pad1（新增 t0）
+    CXLBucket.head_offset→ CXLBucket.head_block_id（uint64_t 改为 uint32_t + pad）
+
+  替换（Layout 函数）：
+    pool_slot_offset(slot_id) → unified_block_offset(block_id)
+    pool_off / data_region_off → globalidmap_off / unifiedblockpool_off / spillover_off
+    two_rw_acquire_slot()      → local_cache_pop()（含 FreeBlockQueue drain 和 AllocChunk 逻辑）
+    two_rw_get_pool_slot()     → unified_block_ptr(block_id)
+
+===============================================================================

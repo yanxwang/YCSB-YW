@@ -31,7 +31,6 @@ namespace TwoRW {
 // ============================================================================
 
 static void* allocate_cxl_slab(int numa_node, uint64_t size) {
-    // Try POSIX shared memory first (same semantics as existing codebase)
     char shm_name[64];
     snprintf(shm_name, sizeof(shm_name), "/sharedkv_2rw_node%d", numa_node);
 
@@ -56,7 +55,6 @@ static void* allocate_cxl_slab(int numa_node, uint64_t size) {
         return nullptr;
     }
 
-    // Bind to NUMA node if available
     if (numa_node >= 0 && numa_available() >= 0) {
         struct bitmask* mask = numa_bitmask_alloc(numa_max_node() + 1);
         numa_bitmask_setbit(mask, static_cast<unsigned>(numa_node));
@@ -73,10 +71,8 @@ static void* allocate_cxl_slab(int numa_node, uint64_t size) {
 
 static void init_cxl_memory(void* base, const TwoRWLayout& L,
                               const TwoRWConfig& cfg) {
-    // Zero entire memory
     memset(base, 0, L.total_size);
 
-    // Write header
     TwoRWHeader* hdr = L.header(base);
     hdr->magic            = HEADER_MAGIC;
     hdr->num_clients      = cfg.num_clients;
@@ -86,14 +82,12 @@ static void init_cxl_memory(void* base, const TwoRWLayout& L,
     hdr->queue_depth      = cfg.queue_depth;
     hdr->total_size       = L.total_size;
 
-    // Init hash table buckets (already zeroed, head_offset=0 means empty)
-
     // Init DataRegion metadata
     for (uint32_t i = 0; i < cfg.num_workers; i++) {
         DataRegionHeader* meta = L.data_region_meta(base, i);
         meta->base_offset      = L.data_region_offset(i);
         meta->total_size       = L.data_region_per_worker;
-        meta->alloc_offset     = sizeof(DataRegionHeader); // skip own header
+        meta->alloc_offset     = sizeof(DataRegionHeader);
         meta->free_list_offset = 0;
         meta->nodes_allocated  = 0;
         meta->nodes_recycled   = 0;
@@ -108,9 +102,12 @@ static void init_cxl_memory(void* base, const TwoRWLayout& L,
         }
     }
 
-    // Init RequestQueues
+    // Init RequestQueues: n_clients * n_synchronizers queues
+    const uint32_t s = cfg.num_synchronizers;
     for (uint32_t j = 0; j < cfg.num_clients; j++) {
-        L.request_queue(base, j)->init();
+        for (uint32_t k = 0; k < s; k++) {
+            L.request_sub_queue(base, j, k)->init();
+        }
     }
 
     // Init WorkerRings
@@ -131,6 +128,31 @@ static void init_cxl_memory(void* base, const TwoRWLayout& L,
 }
 
 // ============================================================================
+// NUMA helpers
+// ============================================================================
+
+// Allocate sz bytes on the given NUMA node via numa_alloc_onnode.
+// Returns nullptr if NUMA is unavailable or allocation fails.
+static void* try_numa_alloc(size_t sz, int numa_node) {
+    if (numa_node < 0 || numa_available() < 0) return nullptr;
+    void* p = numa_alloc_onnode(sz, numa_node);
+    if (!p) {
+        fprintf(stderr, "[2RW] WARNING: numa_alloc_onnode(%zu, %d) failed\n", sz, numa_node);
+    }
+    return p;
+}
+
+static void verify_numa_node(const void* ptr, int expected_node, const char* label) {
+    if (!ptr || expected_node < 0) return;
+    int node = -1;
+    if (get_mempolicy(&node, NULL, 0, (void*)ptr, MPOL_F_NODE | MPOL_F_ADDR) == 0) {
+        fprintf(stderr, "[2RW] %s=%p  NUMA node %d  (expected %d)%s\n",
+                label, ptr, node, expected_node,
+                (node == expected_node) ? "  OK" : "  WARNING: mismatch!");
+    }
+}
+
+// ============================================================================
 // two_rw_init
 // ============================================================================
 
@@ -142,45 +164,31 @@ TwoRWContext* two_rw_init(const TwoRWConfig& cfg) {
     }
     cfg.print();
 
-    // ---- Allocate TwoRWContext on Sync's local NUMA node (CPU 0) ----
-    // ctx->gsn is written by Sync every op via lock xadd.
-    // If it lands on a different NUMA node (e.g. node 1 from default heap),
-    // each fetch_add pays remote-NUMA latency (~1000-2000 ticks) instead of
-    // L1-cache latency (~5 ticks). Force allocation on node 0.
-    const int sync_numa_node = (numa_available() >= 0) ? numa_node_of_cpu(0) : -1;
+    // ---- Allocate TwoRWContext on Poller's local NUMA node (CPU 0) ----
+    const int cpu0_numa = (numa_available() >= 0) ? numa_node_of_cpu(0) : -1;
 
-    // ---- Critical topology check ----
-    // If CPU 0's NUMA node == cfg.numa_node (the CXL device node), every
-    // gsn.fetch_add will be a CXL round-trip (~1000 ns ≈ 1500–2000 ticks).
-    // The isolated microbenchmark still shows ~18 ticks (gsn stays in L1),
-    // but in the hot loop CXL dequeue ops evict gsn → CXL miss on fetch_add.
     fprintf(stderr,
         "[2RW] NUMA topology: CPU0_node=%d  CXL_node=%d  %s\n",
-        sync_numa_node, cfg.numa_node,
-        (sync_numa_node >= 0 && sync_numa_node == cfg.numa_node)
-            ? "!!! WARNING: CPU0 is ON the CXL node — gsn will have CXL latency !!!"
+        cpu0_numa, cfg.numa_node,
+        (cpu0_numa >= 0 && cpu0_numa == cfg.numa_node)
+            ? "WARNING: CPU0 is ON the CXL node"
             : "OK (CPU0 local DRAM != CXL node)");
 
     TwoRWContext* ctx = nullptr;
-    if (sync_numa_node >= 0) {
-        void* raw = numa_alloc_onnode(sizeof(TwoRWContext), sync_numa_node);
-        if (!raw) {
-            fprintf(stderr, "[2RW] numa_alloc_onnode failed, falling back to new\n");
-            ctx = new TwoRWContext();
+    {
+        void* raw = try_numa_alloc(sizeof(TwoRWContext), cpu0_numa);
+        if (raw) {
+            ctx = new (raw) TwoRWContext();
         } else {
-            ctx = new (raw) TwoRWContext();  // placement new: construct in-place
+            ctx = new TwoRWContext();
         }
-    } else {
-        ctx = new TwoRWContext();
     }
-
-    // gsn has been moved to SyncThreadState — checked after sync_state is allocated below
 
     ctx->config = cfg;
     ctx->layout = TwoRWLayout::calculate(
         cfg.num_clients, cfg.num_workers,
         cfg.slots_per_client, cfg.num_buckets,
-        cfg.memory_size);
+        cfg.memory_size, cfg.num_synchronizers);
 
     // Allocate CXL slab
     ctx->cxl_base = allocate_cxl_slab(cfg.numa_node, cfg.memory_size);
@@ -197,6 +205,8 @@ TwoRWContext* two_rw_init(const TwoRWConfig& cfg) {
 
     const uint32_t n = cfg.num_clients;
     const uint32_t m = cfg.num_workers;
+    const uint32_t s = cfg.num_synchronizers;
+    const uint32_t wps = m / s;  // workers per synchronizer
 
     // ---- Allocate local (non-CXL) structures ----
 
@@ -206,82 +216,82 @@ TwoRWContext* two_rw_init(const TwoRWConfig& cfg) {
         ctx->free_id_queues[j].init(j, cfg.slots_per_client);
     }
 
-    // -----------------------------------------------------------------------
-    // Sync-hot SPSC handles: req_consumers[n] and ring_producers[m].
-    //
-    // The Sync thread WRITES to these handles on every op:
-    //   - req_consumers[j].cached_read_   (updated in dequeue)
-    //   - ring_producers[i].cached_write_ (updated in enqueue)
-    //
-    // If these structs are on a DIFFERENT NUMA node from Sync (CPU 0), every
-    // write is a remote-NUMA store.  The sfence at the end of each
-    // dequeue/enqueue must drain the store buffer to that remote node, adding
-    // latency AND L1 cache-set pressure that can evict gsn — turning each
-    // gsn.fetch_add into a local-DRAM miss (~200 ticks) or worse.
-    //
-    // Fix: allocate them on sync_numa_node via numa_alloc_onnode + placement new.
-    // -----------------------------------------------------------------------
+    // ---- Request thread producers: [n * s] ----
+    // Written by Request Threads (not SNs) → regular new[], no NUMA needed
+    ctx->req_producers = new CXLSpscProducer<KVRequest, QUEUE_CAP>[n * s];
+    for (uint32_t j = 0; j < n; j++) {
+        for (uint32_t k = 0; k < s; k++) {
+            ctx->req_producers[j * s + k].attach(
+                ctx->layout.request_sub_queue(ctx->cxl_base, j, k));
+        }
+    }
 
-    // For non-Sync consumers/producers (req_producers, ring_consumers,
-    // resp_producers, resp_consumers) the Writer is NOT Sync → regular new[] OK.
+    // ---- Per-SN: req_consumers[n] and ring_producers[wps] ----
+    // These are written by SN_k on every op → NUMA-allocate on SN_k's CPU node.
+    // CPU layout: SN_k runs on CPU (k+1).
+    ctx->sn_req_consumers   = new CXLSpscConsumer<KVRequest, QUEUE_CAP>*[s]{};
+    ctx->sn_ring_producers  = new CXLSpscProducer<KVRequest, QUEUE_CAP>*[s]{};
+    ctx->sn_req_con_is_numa  = new bool[s]{};
+    ctx->sn_ring_prod_is_numa = new bool[s]{};
+    ctx->sn_state_is_numa    = new bool[s]{};
+    ctx->sync_state_ptrs     = new SyncThreadState*[s]{};
 
-    // req_producers[n] — written by Request Threads, not Sync → regular new[]
-    ctx->req_producers = new CXLSpscProducer<KVRequest, QUEUE_CAP>[n];
+    for (uint32_t k = 0; k < s; k++) {
+        const int sn_cpu      = static_cast<int>(k + 1);  // SN_k on CPU k+1
+        const int sn_numa     = (numa_available() >= 0) ? numa_node_of_cpu(sn_cpu) : -1;
+        const uint32_t w_base = k * wps;
 
-    // req_consumers[n] — written by Sync on every dequeue → NUMA node 0
-    // ring_producers[m] — written by Sync on every enqueue → NUMA node 0
-    bool req_con_numa  = false;
-    bool ring_prod_numa = false;
-
-    if (sync_numa_node >= 0 && numa_available() >= 0) {
-        // req_consumers
+        // ---- req_consumers[n] for SN_k ----
         {
             size_t sz = n * sizeof(CXLSpscConsumer<KVRequest, QUEUE_CAP>);
-            void* raw = numa_alloc_onnode(sz, sync_numa_node);
+            void* raw = try_numa_alloc(sz, sn_numa);
             if (raw) {
-                ctx->req_consumers = static_cast<CXLSpscConsumer<KVRequest, QUEUE_CAP>*>(raw);
+                ctx->sn_req_consumers[k] =
+                    static_cast<CXLSpscConsumer<KVRequest, QUEUE_CAP>*>(raw);
                 for (uint32_t j = 0; j < n; j++)
-                    new (&ctx->req_consumers[j]) CXLSpscConsumer<KVRequest, QUEUE_CAP>();
-                req_con_numa = true;
+                    new (&ctx->sn_req_consumers[k][j])
+                        CXLSpscConsumer<KVRequest, QUEUE_CAP>();
+                ctx->sn_req_con_is_numa[k] = true;
             } else {
-                fprintf(stderr, "[2RW] WARNING: numa_alloc_onnode failed for req_consumers, "
-                                "falling back to new[]\n");
-                ctx->req_consumers = new CXLSpscConsumer<KVRequest, QUEUE_CAP>[n];
+                ctx->sn_req_consumers[k] =
+                    new CXLSpscConsumer<KVRequest, QUEUE_CAP>[n];
             }
+            // Attach: SN_k polls queue [j * s + k] for each client j
+            for (uint32_t j = 0; j < n; j++)
+                ctx->sn_req_consumers[k][j].attach(
+                    ctx->layout.request_sub_queue(ctx->cxl_base, j, k));
+            { char lbl[32]; snprintf(lbl, sizeof(lbl), "sn_req_consumers[%u]", k);
+              verify_numa_node(ctx->sn_req_consumers[k], sn_numa, lbl); }
         }
-        // ring_producers
+
+        // ---- ring_producers[wps] for SN_k's CXL WorkerRings ----
         {
-            size_t sz = m * sizeof(CXLSpscProducer<KVRequest, QUEUE_CAP>);
-            void* raw = numa_alloc_onnode(sz, sync_numa_node);
+            size_t sz = wps * sizeof(CXLSpscProducer<KVRequest, QUEUE_CAP>);
+            void* raw = try_numa_alloc(sz, sn_numa);
             if (raw) {
-                ctx->ring_producers = static_cast<CXLSpscProducer<KVRequest, QUEUE_CAP>*>(raw);
-                for (uint32_t i = 0; i < m; i++)
-                    new (&ctx->ring_producers[i]) CXLSpscProducer<KVRequest, QUEUE_CAP>();
-                ring_prod_numa = true;
+                ctx->sn_ring_producers[k] =
+                    static_cast<CXLSpscProducer<KVRequest, QUEUE_CAP>*>(raw);
+                for (uint32_t i = 0; i < wps; i++)
+                    new (&ctx->sn_ring_producers[k][i])
+                        CXLSpscProducer<KVRequest, QUEUE_CAP>();
+                ctx->sn_ring_prod_is_numa[k] = true;
             } else {
-                fprintf(stderr, "[2RW] WARNING: numa_alloc_onnode failed for ring_producers, "
-                                "falling back to new[]\n");
-                ctx->ring_producers = new CXLSpscProducer<KVRequest, QUEUE_CAP>[m];
+                ctx->sn_ring_producers[k] =
+                    new CXLSpscProducer<KVRequest, QUEUE_CAP>[wps];
             }
+            // Attach to WorkerRings[w_base .. w_base+wps-1]
+            for (uint32_t i = 0; i < wps; i++)
+                ctx->sn_ring_producers[k][i].attach(
+                    ctx->layout.worker_ring(ctx->cxl_base, w_base + i));
+            { char lbl[32]; snprintf(lbl, sizeof(lbl), "sn_ring_producers[%u]", k);
+              verify_numa_node(ctx->sn_ring_producers[k], sn_numa, lbl); }
         }
-    } else {
-        ctx->req_consumers  = new CXLSpscConsumer<KVRequest, QUEUE_CAP>[n];
-        ctx->ring_producers = new CXLSpscProducer<KVRequest, QUEUE_CAP>[m];
     }
 
-    // Both must succeed for sync_alloc_is_numa to be true (destroys must match inits)
-    ctx->sync_alloc_is_numa = (req_con_numa && ring_prod_numa);
-
-    // Attach req_producers and req_consumers to RequestQueues
-    for (uint32_t j = 0; j < n; j++) {
-        ctx->req_producers[j].attach(ctx->layout.request_queue(ctx->cxl_base, j));
-        ctx->req_consumers[j].attach(ctx->layout.request_queue(ctx->cxl_base, j));
-    }
-
-    // ring_consumers[m] — written by Workers, not Sync → regular new[]
+    // ---- Worker consumers: ring_consumers[m] (CXL) ----
+    // Written by Workers, not SNs → regular new[]
     ctx->ring_consumers = new CXLSpscConsumer<KVRequest, QUEUE_CAP>[m];
     for (uint32_t i = 0; i < m; i++) {
-        ctx->ring_producers[i].attach(ctx->layout.worker_ring(ctx->cxl_base, i));
         ctx->ring_consumers[i].attach(ctx->layout.worker_ring(ctx->cxl_base, i));
     }
 
@@ -299,28 +309,7 @@ TwoRWContext* two_rw_init(const TwoRWConfig& cfg) {
                 m, sizeof(LocalSpscQueue<KVRequest, QUEUE_CAP>) >> 10);
     }
 
-    // Verify req_consumers and ring_producers are on the right NUMA node
-    if (ctx->sync_alloc_is_numa && n > 0) {
-        int node = -1;
-        if (get_mempolicy(&node, NULL, 0, (void*)ctx->req_consumers,
-                          MPOL_F_NODE | MPOL_F_ADDR) == 0) {
-            fprintf(stderr,
-                "[2RW] req_consumers[0]=%p  on NUMA node %d  (Sync node %d)%s\n",
-                (void*)ctx->req_consumers, node, sync_numa_node,
-                (node == sync_numa_node) ? "  OK" : "  WARNING: mismatch!");
-        }
-    }
-    if (ctx->sync_alloc_is_numa && m > 0) {
-        int node = -1;
-        if (get_mempolicy(&node, NULL, 0, (void*)ctx->ring_producers,
-                          MPOL_F_NODE | MPOL_F_ADDR) == 0) {
-            fprintf(stderr,
-                "[2RW] ring_producers[0]=%p  on NUMA node %d  (Sync node %d)%s\n",
-                (void*)ctx->ring_producers, node, sync_numa_node,
-                (node == sync_numa_node) ? "  OK" : "  WARNING: mismatch!");}
-    }
-
-    // SPSC handles for ResponseQueue[n][m]
+    // ---- ResponseQueue handles ----
     ctx->resp_producers = new CXLSpscProducer<KVResponse, QUEUE_CAP>[n * m];
     ctx->resp_consumers = new CXLSpscConsumer<KVResponse, QUEUE_CAP>[n * m];
     for (uint32_t j = 0; j < n; j++) {
@@ -333,7 +322,7 @@ TwoRWContext* two_rw_init(const TwoRWConfig& cfg) {
         }
     }
 
-    // UINTR fd arrays (written by Response Threads at runtime)
+    // ---- UINTR fd arrays ----
     ctx->resp_uintr_fds = new int[n];
     ctx->resp_fd_ready  = new std::atomic<bool>[n];
     for (uint32_t j = 0; j < n; j++) {
@@ -341,45 +330,48 @@ TwoRWContext* two_rw_init(const TwoRWConfig& cfg) {
         ctx->resp_fd_ready[j].store(false);
     }
 
-    // ---- Thread state structs ----
+    // ---- SyncThreadState[s]: one per SN, NUMA-allocated on SN's CPU node ----
+    for (uint32_t k = 0; k < s; k++) {
+        const int sn_cpu  = static_cast<int>(k + 1);
+        const int sn_numa = (numa_available() >= 0) ? numa_node_of_cpu(sn_cpu) : -1;
+        const uint32_t w_base = k * wps;
 
-    // Allocate SyncThreadState on Sync's local NUMA node (node 0).
-    // SyncThreadState::gsn is the hot-path atomic (written every op).
-    // Keeping it on node 0 ensures L1-cache latency (~5 ticks) not remote-NUMA.
-    {
-        void* raw = (sync_numa_node >= 0 && numa_available() >= 0)
-                    ? numa_alloc_onnode(sizeof(SyncThreadState), sync_numa_node)
-                    : nullptr;
-        if (raw) {
-            ctx->sync_state = new (raw) SyncThreadState{};
-            ctx->sync_state_is_numa = true;
-        } else {
-            ctx->sync_state = new SyncThreadState{};
+        SyncThreadState* ss = nullptr;
+        {
+            void* raw = try_numa_alloc(sizeof(SyncThreadState), sn_numa);
+            if (raw) {
+                ss = new (raw) SyncThreadState{};
+                ctx->sn_state_is_numa[k] = true;
+            } else {
+                ss = new SyncThreadState{};
+            }
         }
-    }
-    ctx->sync_state->layout               = &ctx->layout;
-    ctx->sync_state->cxl_base             = ctx->cxl_base;
-    ctx->sync_state->stop_flag            = &ctx->stop_flag;
-    // gsn is now embedded in SyncThreadState (no pointer setup needed)
-    ctx->sync_state->ring_producers       = ctx->ring_producers;
-    ctx->sync_state->req_consumers        = ctx->req_consumers;
-    ctx->sync_state->local_ring_producers = ctx->local_ring_producers; // null if not used
-    ctx->sync_state->use_local_ring       = cfg.local_workerring;
-    ctx->sync_state->num_clients          = n;
-    ctx->sync_state->num_workers          = m;
 
-    // Verify gsn is on the right NUMA node
-    {
-        int gsn_node = -1;
-        if (get_mempolicy(&gsn_node, NULL, 0, (void*)&ctx->sync_state->gsn,
-                          MPOL_F_NODE | MPOL_F_ADDR) == 0) {
-            fprintf(stderr,
-                "[2RW] sync_state->gsn=%p  on NUMA node %d  (Sync node %d)%s\n",
-                (void*)&ctx->sync_state->gsn, gsn_node, sync_numa_node,
-                (gsn_node == sync_numa_node) ? "  OK" : "  WARNING: mismatch!");
-        }
+        ss->layout               = &ctx->layout;
+        ss->cxl_base             = ctx->cxl_base;
+        ss->stop_flag            = &ctx->stop_flag;
+        ss->ring_producers       = ctx->sn_ring_producers[k];
+        ss->req_consumers        = ctx->sn_req_consumers[k];
+        ss->local_ring_producers = cfg.local_workerring
+                                   ? &ctx->local_ring_producers[w_base]
+                                   : nullptr;
+        ss->use_local_ring       = cfg.local_workerring;
+        ss->num_clients          = n;
+        ss->num_workers          = m;
+        ss->sn_id                = k;
+        ss->num_synchronizers    = s;
+        ss->workers_base         = w_base;
+        ss->workers_count        = wps;
+        // GSN for SN_k starts at k (interleaved: k, k+s, k+2s, ...)
+        ss->gsn.store(k, std::memory_order_relaxed);
+
+        { char lbl[32]; snprintf(lbl, sizeof(lbl), "sync_state[%u].gsn", k);
+          verify_numa_node((void*)&ss->gsn, sn_numa, lbl); }
+
+        ctx->sync_state_ptrs[k] = ss;
     }
 
+    // ---- WorkerThreadState[m] ----
     ctx->worker_states = new WorkerThreadState[m];
     for (uint32_t i = 0; i < m; i++) {
         auto& ws                 = ctx->worker_states[i];
@@ -392,10 +384,11 @@ TwoRWContext* two_rw_init(const TwoRWConfig& cfg) {
         ws.local_ring_consumer   = cfg.local_workerring
                                    ? &ctx->local_ring_consumers[i] : nullptr;
         ws.use_local_ring        = cfg.local_workerring;
-        ws.resp_producers        = ctx->resp_producers; // base; worker uses [j*m + wid]
+        ws.resp_producers        = ctx->resp_producers;
         ws.num_clients           = n;
     }
 
+    // ---- PollerThreadState ----
     ctx->poller_state = new PollerThreadState{};
     ctx->poller_state->layout          = &ctx->layout;
     ctx->poller_state->cxl_base        = ctx->cxl_base;
@@ -410,22 +403,33 @@ TwoRWContext* two_rw_init(const TwoRWConfig& cfg) {
 
 // ============================================================================
 // two_rw_start_threads
-// CPU pinning: Sync=0, Poller=1, Workers=[2+n .. 1+n+m]
+// CPU layout: Poller=CPU0, SN_k=CPU(k+1), Workers=CPU[w_base..w_base+m-1]
 // ============================================================================
 
 void two_rw_start_threads(TwoRWContext* ctx) {
     const uint32_t n  = ctx->config.num_clients;
     const uint32_t m  = ctx->config.num_workers;
+    const uint32_t s  = ctx->config.num_synchronizers;
     const int w_base  = (ctx->config.worker_cpu_start < 0)
-                        ? static_cast<int>(2 + n)
+                        ? static_cast<int>(1 + s)
                         : ctx->config.worker_cpu_start;
 
-    // Synchronizer on CPU 0
-    ctx->synchronizer_thread = std::thread([ctx]() {
-        CXLBase::set(ctx->cxl_base);  // Each thread must set its own TLS base
+    // Poller on CPU 0
+    ctx->poller_thread = std::thread([ctx]() {
+        CXLBase::set(ctx->cxl_base);
         pin_current_thread_to_cpu(0);
-        two_rw_synchronizer_run(ctx->sync_state);
+        two_rw_poller_run(ctx->poller_state);
     });
+
+    // Synchronizers: SN_k on CPU (k+1)
+    ctx->synchronizer_threads.resize(s);
+    for (uint32_t k = 0; k < s; k++) {
+        ctx->synchronizer_threads[k] = std::thread([ctx, k]() {
+            CXLBase::set(ctx->cxl_base);
+            pin_current_thread_to_cpu(static_cast<int>(k + 1));
+            two_rw_synchronizer_run(ctx->sync_state_ptrs[k]);
+        });
+    }
 
     // Workers on CPUs [w_base .. w_base+m-1]
     ctx->worker_threads.resize(m);
@@ -437,15 +441,10 @@ void two_rw_start_threads(TwoRWContext* ctx) {
         });
     }
 
-    // Poller on CPU 1
-    ctx->poller_thread = std::thread([ctx]() {
-        CXLBase::set(ctx->cxl_base);
-        pin_current_thread_to_cpu(1);
-        two_rw_poller_run(ctx->poller_state);
-    });
-
-    fprintf(stderr, "[2RW] Threads started: Sync=CPU0, Poller=CPU1, "
-            "Workers=CPU[%d..%d]\n", w_base, w_base + static_cast<int>(m) - 1);
+    fprintf(stderr,
+            "[2RW] Threads started: Poller=CPU0, "
+            "SN[0..%u]=CPU[1..%u], Workers=CPU[%d..%d]\n",
+            s - 1, s, w_base, w_base + static_cast<int>(m) - 1);
 }
 
 // ============================================================================
@@ -453,16 +452,17 @@ void two_rw_start_threads(TwoRWContext* ctx) {
 // ============================================================================
 
 void two_rw_stop(TwoRWContext* ctx) {
+    const uint32_t s = ctx->config.num_synchronizers;
+
     // Step 1: Signal stop (Request Threads must already be done submitting)
     ctx->stop_flag.store(true, std::memory_order_release);
 
-    // Step 2: Sync drains its RequestQueues (handled in sync loop)
+    // Step 2: SNs drain their RequestQueues (handled in sync loop)
     // Step 3: Workers drain their WorkerRings (handled in worker loop)
     // Step 4: Response Threads drain ResponseQueues (caller's responsibility)
 
-    // Join threads
-    if (ctx->synchronizer_thread.joinable())
-        ctx->synchronizer_thread.join();
+    for (auto& t : ctx->synchronizer_threads)
+        if (t.joinable()) t.join();
 
     for (auto& t : ctx->worker_threads)
         if (t.joinable()) t.join();
@@ -470,8 +470,13 @@ void two_rw_stop(TwoRWContext* ctx) {
     if (ctx->poller_thread.joinable())
         ctx->poller_thread.join();
 
-    fprintf(stderr, "[2RW] All threads stopped. GSN reached: %lu\n",
-            ctx->sync_state ? ctx->sync_state->gsn.load() : 0UL);
+    // Print final GSN per SN
+    for (uint32_t k = 0; k < s; k++) {
+        if (ctx->sync_state_ptrs && ctx->sync_state_ptrs[k]) {
+            fprintf(stderr, "[2RW] SN%u final GSN: %lu\n",
+                    k, ctx->sync_state_ptrs[k]->gsn.load());
+        }
+    }
 }
 
 // ============================================================================
@@ -483,65 +488,76 @@ void two_rw_destroy(TwoRWContext* ctx) {
 
     const uint32_t n = ctx->config.num_clients;
     const uint32_t m = ctx->config.num_workers;
+    const uint32_t s = ctx->config.num_synchronizers;
+    const uint32_t wps = m / s;
     const bool numa_ok = (numa_available() >= 0);
-    const bool use_numa = ctx->sync_alloc_is_numa && numa_ok;
 
-    // Non-Sync allocations → always regular delete[]
+    // Non-SN allocations → always regular delete[]
     delete[] ctx->free_id_queues;
-    delete[] ctx->req_producers;    // written by Request Threads, regular new[]
-    delete[] ctx->ring_consumers;   // written by Workers, regular new[]
+    delete[] ctx->req_producers;
+    delete[] ctx->ring_consumers;
     delete[] ctx->resp_producers;
     delete[] ctx->resp_consumers;
     delete[] ctx->resp_uintr_fds;
     delete[] ctx->resp_fd_ready;
     delete[] ctx->worker_states;
     delete   ctx->poller_state;
+
     // Local DRAM rings (regular new[], only allocated when local_workerring=true)
     delete[] ctx->local_ring_consumers;
     delete[] ctx->local_ring_producers;
     delete[] ctx->local_rings;
 
-    // Sync-hot allocations: req_consumers[n], ring_producers[m], sync_state
-    // These were allocated via numa_alloc_onnode+placement-new when sync_alloc_is_numa.
-    if (use_numa) {
-        // req_consumers: explicit destructor loop + numa_free
-        if (ctx->req_consumers) {
-            for (uint32_t j = 0; j < n; j++)
-                ctx->req_consumers[j].~CXLSpscConsumer<KVRequest, QUEUE_CAP>();
-            numa_free(ctx->req_consumers,
-                      n * sizeof(CXLSpscConsumer<KVRequest, QUEUE_CAP>));
+    // Per-SN allocations: req_consumers, ring_producers, sync_state
+    if (ctx->sync_state_ptrs) {
+        for (uint32_t k = 0; k < s; k++) {
+            // req_consumers[n]
+            if (ctx->sn_req_consumers && ctx->sn_req_consumers[k]) {
+                if (ctx->sn_req_con_is_numa && ctx->sn_req_con_is_numa[k] && numa_ok) {
+                    for (uint32_t j = 0; j < n; j++)
+                        ctx->sn_req_consumers[k][j]
+                            .~CXLSpscConsumer<KVRequest, QUEUE_CAP>();
+                    numa_free(ctx->sn_req_consumers[k],
+                              n * sizeof(CXLSpscConsumer<KVRequest, QUEUE_CAP>));
+                } else {
+                    delete[] ctx->sn_req_consumers[k];
+                }
+            }
+            // ring_producers[wps]
+            if (ctx->sn_ring_producers && ctx->sn_ring_producers[k]) {
+                if (ctx->sn_ring_prod_is_numa && ctx->sn_ring_prod_is_numa[k] && numa_ok) {
+                    for (uint32_t i = 0; i < wps; i++)
+                        ctx->sn_ring_producers[k][i]
+                            .~CXLSpscProducer<KVRequest, QUEUE_CAP>();
+                    numa_free(ctx->sn_ring_producers[k],
+                              wps * sizeof(CXLSpscProducer<KVRequest, QUEUE_CAP>));
+                } else {
+                    delete[] ctx->sn_ring_producers[k];
+                }
+            }
+            // SyncThreadState
+            if (ctx->sync_state_ptrs[k]) {
+                if (ctx->sn_state_is_numa && ctx->sn_state_is_numa[k] && numa_ok) {
+                    ctx->sync_state_ptrs[k]->~SyncThreadState();
+                    numa_free(ctx->sync_state_ptrs[k], sizeof(SyncThreadState));
+                } else {
+                    delete ctx->sync_state_ptrs[k];
+                }
+            }
         }
-        // ring_producers: explicit destructor loop + numa_free
-        if (ctx->ring_producers) {
-            for (uint32_t i = 0; i < m; i++)
-                ctx->ring_producers[i].~CXLSpscProducer<KVRequest, QUEUE_CAP>();
-            numa_free(ctx->ring_producers,
-                      m * sizeof(CXLSpscProducer<KVRequest, QUEUE_CAP>));
-        }
-    } else {
-        delete[] ctx->req_consumers;
-        delete[] ctx->ring_producers;
     }
 
-    // sync_state has its own tracking flag (may be numa even if arrays are not)
-    if (ctx->sync_state) {
-        if (ctx->sync_state_is_numa && numa_ok) {
-            ctx->sync_state->~SyncThreadState();
-            numa_free(ctx->sync_state, sizeof(SyncThreadState));
-        } else {
-            delete ctx->sync_state;
-        }
-    }
+    delete[] ctx->sync_state_ptrs;
+    delete[] ctx->sn_req_consumers;
+    delete[] ctx->sn_ring_producers;
+    delete[] ctx->sn_req_con_is_numa;
+    delete[] ctx->sn_ring_prod_is_numa;
+    delete[] ctx->sn_state_is_numa;
 
     if (ctx->cxl_base) {
         munmap(ctx->cxl_base, ctx->config.memory_size);
     }
 
-    // ctx was allocated with numa_alloc_onnode + placement new (or plain new).
-    // Either way, call destructor explicitly then free the raw memory.
-    // numa_free is safe to call on regular malloc memory too on most systems,
-    // but to be safe we use the same path: explicit dtor + numa_free if
-    // numa is available, otherwise plain delete.
     if (numa_available() >= 0) {
         ctx->~TwoRWContext();
         numa_free(ctx, sizeof(TwoRWContext));
@@ -560,7 +576,7 @@ void TwoRWLayout::print() const {
         "  hash_table      @ 0x%010lx  (%u buckets)\n"
         "  data_region_meta@ 0x%010lx  (%u workers)\n"
         "  pool            @ 0x%010lx  (%u clients × %u slots × 2048B = %zu MB)\n"
-        "  request_queues  @ 0x%010lx  (%u queues)\n"
+        "  request_queues  @ 0x%010lx  (%u clients × %u SNs = %u queues)\n"
         "  worker_rings    @ 0x%010lx  (%u rings)\n"
         "  response_queues @ 0x%010lx  (%u × %u = %u queues)\n"
         "  data_region     @ 0x%010lx  (%zu MB per worker)\n",
@@ -569,7 +585,8 @@ void TwoRWLayout::print() const {
         data_region_meta_off, num_workers,
         pool_off, num_clients, slots_per_client,
         (size_t)((uint64_t)num_clients * slots_per_client * 2048 >> 20),
-        request_queue_off, num_clients,
+        request_queue_off, num_clients, num_synchronizers,
+        num_clients * num_synchronizers,
         worker_ring_off, num_workers,
         response_queue_off, num_clients, num_workers, num_clients * num_workers,
         data_region_off, (size_t)(data_region_per_worker >> 20));

@@ -30,7 +30,7 @@ echo "Executable: $(pwd)/sharedkv_benchmark"
 echo "=========================================="
 
 # Create workloads directory
-mkdir -p ../workloads
-echo ""
-echo "Workloads directory: $(cd .. && pwd)/workloads"
-echo "Use gen_workload.py to generate workload files"
+# mkdir -p ../workloads
+# echo ""
+# echo "Workloads directory: $(cd .. && pwd)/workloads"
+# echo "Use gen_workload.py to generate workload files"

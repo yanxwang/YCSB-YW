@@ -5,15 +5,16 @@
 //
 // Computes byte offsets for every region in the CXL shared memory slab.
 // All sizes are computed at runtime from TwoRWConfig so that benchmark
-// parameters (num_clients, num_workers, slots_per_client, queue_depth)
-// can be freely changed at startup.
+// parameters (num_clients, num_workers, num_synchronizers, slots_per_client,
+// queue_depth) can be freely changed at startup.
 //
 // Layout (low → high):
 //   [TwoRWHeader          64B]
 //   [HashTable            num_buckets × 8B, aligned 64B]
 //   [DataRegionMeta       num_workers × 64B]
 //   [Pool                 num_clients × slots_per_client × 2048B]
-//   [RequestQueue         num_clients × sizeof(Queue<KVRequest>)]
+//   [RequestQueue         num_clients × num_synchronizers × sizeof(Queue<KVRequest>)]
+//                         indexed [client_id * s + sn_id]
 //   [WorkerRing           num_workers × sizeof(Queue<KVRequest>)]
 //   [ResponseQueue        num_clients × num_workers × sizeof(Queue<KVResponse>)]
 //   [DataRegion           m equal segments, rest of CXL]
@@ -57,18 +58,21 @@ struct TwoRWLayout {
     uint32_t num_workers;
     uint32_t slots_per_client;
     uint32_t num_buckets;
+    uint32_t num_synchronizers;     // s: number of synchronizer threads
 
     static TwoRWLayout calculate(uint32_t n_clients,
                                   uint32_t n_workers,
                                   uint32_t slots_per_client,
                                   uint32_t n_buckets,
-                                  uint64_t total_mem) {
+                                  uint64_t total_mem,
+                                  uint32_t n_synchronizers = 1) {
         TwoRWLayout L{};
-        L.num_clients      = n_clients;
-        L.num_workers      = n_workers;
-        L.slots_per_client = slots_per_client;
-        L.num_buckets      = n_buckets;
-        L.total_size       = total_mem;
+        L.num_clients       = n_clients;
+        L.num_workers       = n_workers;
+        L.slots_per_client  = slots_per_client;
+        L.num_buckets       = n_buckets;
+        L.total_size        = total_mem;
+        L.num_synchronizers = n_synchronizers;
 
         auto align_up = [](uint64_t off, uint64_t align) -> uint64_t {
             return (off + align - 1) & ~(align - 1);
@@ -96,9 +100,9 @@ struct TwoRWLayout {
         off += static_cast<uint64_t>(n_clients) * slots_per_client * sizeof(KVPoolSlot);
         off = align_up(off, 64);
 
-        // RequestQueue[n_clients]
+        // RequestQueue[n_clients × n_synchronizers], indexed [client_id * s + sn_id]
         L.request_queue_off = off;
-        off += static_cast<uint64_t>(n_clients) * sizeof(ReqQueue);
+        off += static_cast<uint64_t>(n_clients) * n_synchronizers * sizeof(ReqQueue);
         off = align_up(off, 64);
 
         // WorkerRing[n_workers]
@@ -156,11 +160,13 @@ struct TwoRWLayout {
         return client_id * slots_per_client + local_idx;
     }
 
-    // RequestQueue[client_id]
-    ReqQueue* request_queue(void* base, uint32_t client_id) const {
-        assert(client_id < num_clients);
+    // RequestQueue[client_id * num_synchronizers + sn_id]
+    ReqQueue* request_sub_queue(void* base, uint32_t client_id,
+                                 uint32_t sn_id = 0) const {
+        assert(client_id < num_clients && sn_id < num_synchronizers);
+        uint64_t idx = static_cast<uint64_t>(client_id) * num_synchronizers + sn_id;
         return reinterpret_cast<ReqQueue*>(
-            static_cast<char*>(base) + request_queue_off) + client_id;
+            static_cast<char*>(base) + request_queue_off) + idx;
     }
 
     // WorkerRing[worker_id]

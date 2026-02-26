@@ -77,6 +77,11 @@ struct RespThreadArgs {
     std::vector<uint64_t> out_stage1_ticks;  // t2 - t1: Sync dispatch latency
     std::vector<uint64_t> out_stage2_ticks;  // t3 - t2: Worker execution time
     std::vector<uint64_t> out_total_ticks;   // t3 - t0: end-to-end
+    // Per-SN attribution (populated when num_synchronizers > 1):
+    uint32_t              num_synchronizers = 1;
+    std::vector<uint64_t> out_sn_ops;        // [s]: ops attributed to each SN
+    std::vector<std::vector<uint64_t>> out_sn_stage1_ticks;  // [s][...]: t2-t1 per SN
+    std::vector<std::vector<uint64_t>> out_sn_total_ticks;   // [s][...]: t3-t0 per SN
 };
 
 // ============================================================================
@@ -92,6 +97,11 @@ struct PhaseResult {
     std::vector<uint64_t> stage1_ticks;  // t2 - t1: Sync dispatch latency
     std::vector<uint64_t> stage2_ticks;  // t3 - t2: Worker execution time
     std::vector<uint64_t> total_ticks;   // t3 - t0: end-to-end
+    // Per-SN stats (populated when num_synchronizers > 1):
+    uint32_t              num_synchronizers = 1;
+    std::vector<uint64_t> sn_ops;            // [s]: total ops attributed to each SN
+    std::vector<std::vector<uint64_t>> sn_stage1_ticks;  // [s][...]: t2-t1 per SN
+    std::vector<std::vector<uint64_t>> sn_total_ticks;   // [s][...]: t3-t0 per SN
 };
 
 // ============================================================================

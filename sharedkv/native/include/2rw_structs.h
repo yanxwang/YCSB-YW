@@ -122,7 +122,8 @@ static_assert(sizeof(KVResponse) == 64, "KVResponse must be 64B");
 // ============================================================================
 
 struct alignas(8) CXLBucket {
-    uint64_t head_offset;  // CXL offset to first CXLNode, 0 = empty
+    // CXL offset to first CXLNode, 0 = empty
+    uint64_t head_offset;
 };
 
 // ============================================================================
