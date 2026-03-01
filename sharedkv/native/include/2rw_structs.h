@@ -2,12 +2,15 @@
 
 // ============================================================================
 // SharedKV 2RW Zero-Copy Architecture — Data Structures
-// Spec: SharedKV_2RW_Arch.txt v1.3/v1.4
+// Spec: unified_block_zero_data_copy.txt v2.0
 //
 // Design:
-//   - Only slot_id (32 bits) flows through the control plane
-//   - KV data stays in CXL Global Request Pool (KVPoolSlot)
-//   - All CXL memory structures use offset-based addressing (CXLPtr<T>)
+//   - UnifiedBlock (2KB) serves as both request buffer and persistent hash node
+//   - Only block_id (32 bits) flows through the control plane
+//   - Block Swap Protocol: RT fills id_new, Worker links id_new into hash table,
+//     returns id_old via KVResponse for recycling — zero memcpy
+//   - All hash table links use block_id (uint32_t control plane,
+//     uint64_t in UnifiedBlock.next_block_id for future >8TB CXL compat)
 //   - No spinlocks on buckets (single-writer per Worker partition)
 // ============================================================================
 
@@ -23,8 +26,8 @@
 
 namespace TwoRW {
 
-constexpr uint64_t POOL_MAGIC    = 0x534B;       // "SK"
-constexpr uint64_t HEADER_MAGIC  = 0xC0DE2BC0ULL; // 2RW architecture magic
+constexpr uint64_t BLOCK_MAGIC  = 0x534B;       // "SK" (kept for compat)
+constexpr uint64_t HEADER_MAGIC = 0xC0DE2BC0ULL; // 2RW architecture magic
 
 enum class OpType : uint8_t {
     GET    = 1,
@@ -41,50 +44,90 @@ enum class Status : uint16_t {
 };
 
 // ============================================================================
-// Global Request Pool Slot (2048B = 32 cache lines)
-// Spec v1.3: KVPoolSlot
+// UnifiedBlock (2048B = 32 cache lines)
+// Spec v2.0: replaces KVPoolSlot + CXLNode
 //
-// Lives in CXL shared memory. Partitioned per client: Client j uses
-// slot_ids in [j * slots_per_client, (j+1) * slots_per_client).
+// Dual identity:
+//   Phase 1 (request): RT writes key/value + metadata, sfence, submits block_id.
+//   Phase 2 (data):    Worker links block directly into hash table — no copy.
 //
-// Writer: Request Thread j
-// Reader: Worker i (reads key + value for the operation)
+// next_block_id is uint64_t for future CXL >8TB compatibility (control plane
+// uses uint32_t block_id; casting is zero-cost on x86-64 via implicit zero-ext).
+//
+// Sentinel: block_id == 0 is reserved (never allocated), used as null/chain-end.
+//
+// Header layout (natural alignment, no __attribute__((packed))):
+//   [0..7]   next_block_id (8B)
+//   [8..11]  key_hash (4B)
+//   [12..13] key_len (2B)
+//   [14..15] implicit pad
+//   [16..19] val_len (4B)
+//   [20]     is_external (1B)
+//   [21..23] implicit pad
+//   [24..31] gsn (8B)
+//   [32..39] t0 (8B)
+//   [40..47] t1 (8B)
+//   [48..55] t2 (8B)
+//   [56..63] t3 (8B)
+//   [64..]   data[] — key_len bytes of key, then val_len bytes of value
 // ============================================================================
 
-struct alignas(64) KVPoolSlot {
-    // --- Cache Line 0: Header (64B) ---
-    uint64_t magic;       // POOL_MAGIC = 0x534B
-    uint8_t  op_type;     // OpType enum
-    uint16_t key_len;     // Length of key in key[]
-    uint32_t val_len;     // Length of value in value[]
-    uint64_t t0;          // rdtsc: Request Thread writes to pool
-    char     reserved[40]; // pads cache line 0 to 64B (1B implicit pad before key_len)
+struct alignas(64) UnifiedBlock {
+    // --- Header (64B) ---
+    uint64_t next_block_id; // Hash chain pointer (0 = end); uint64_t for >8TB CXL
+    uint32_t key_hash;      // FNV-1a, pre-computed by RT for fast Worker comparison
+    uint16_t key_len;
+    // [2B implicit pad for val_len alignment]
+    uint32_t val_len;
+    uint8_t  is_external;   // 1 = value stored in SpilloverRegion; data[0..7] = CXL offset
+    // [3B implicit pad for gsn alignment]
+    uint64_t gsn;           // Written by Worker from KVRequest.gsn
+    uint64_t t0;            // RT: after filling block + _mm_sfence(), __rdtscp()
+    uint64_t t1;            // RT: before enqueue to RequestQueue, __rdtscp()
+    uint64_t t2;            // Synchronizer: before enqueue to WorkerRing, __rdtscp()
+    uint64_t t3;            // Worker: after completing KV op, __rdtscp()
 
-    // --- Cache Lines 1-2: Key (128B) ---
-    char     key[128];
-
-    // --- Cache Lines 3-31: Value (1856B) ---
-    char     value[1856];
+    // --- Data (1984B) ---
+    // layout: key_len bytes of key || val_len bytes of value
+    // When is_external == 1: data[0..7] stores uint64_t CXL offset of external value
+    char data[1984];
 };
-static_assert(sizeof(KVPoolSlot) == 2048, "KVPoolSlot must be 2048B");
-static_assert(alignof(KVPoolSlot) == 64);
+static_assert(sizeof(UnifiedBlock) == 2048, "UnifiedBlock must be 2048B");
+static_assert(offsetof(UnifiedBlock, data) == 64, "UnifiedBlock data must start at 64B");
+static_assert(alignof(UnifiedBlock) == 64);
+
+// Inline threshold for value storage in data[]:
+//   data[] = 1984B, key <= 128B => max inline value ~1856B
+// YCSB default 1000B value fits inline. Spillover path not triggered in normal bench.
 
 // ============================================================================
 // Control Plane Request (64B = 1 cache line)
 // Spec: KVRequest
 //
 // Flows: RequestQueue[j] → Synchronizer → WorkerRing[i]
-// Only carries slot_id (index into Pool), never KV data itself.
+// Carries block_id (index into UnifiedBlockPool), never KV data itself.
+//
+// Field layout (natural alignment):
+//   [0..3]   worker_id
+//   [4..7]   block_id
+//   [8..15]  gsn
+//   [16..19] client_id
+//   [20]     op_type
+//   [21..23] _pad0
+//   [24..31] t1
+//   [32..39] t2
+//   [40..63] padding
 // ============================================================================
 
 struct alignas(64) KVRequest {
-    uint32_t worker_id;   // Target Worker (pre-computed by Request Thread)
-    uint32_t slot_id;     // Index into the Global Request Pool
+    uint32_t worker_id;   // Target Worker (pre-computed by RT)
+    uint32_t block_id;    // Index into UnifiedBlockPool (was slot_id)
     uint64_t gsn;         // Global Sequence Number (assigned by Synchronizer)
     uint32_t client_id;   // Which client/response thread to route back to
-    uint32_t _pad0;
-    uint64_t t1;          // rdtsc: enters RequestQueue
-    uint64_t t2;          // rdtsc: dequeued by Worker
+    uint8_t  op_type;     // OpType enum: GET/PUT/UPDATE/DEL (was _pad0 uint32_t)
+    uint8_t  _pad0[3];
+    uint64_t t1;          // rdtscp: RT enqueues to RequestQueue
+    uint64_t t2;          // rdtscp: Synchronizer enqueues to WorkerRing
     char     padding[24];
 };
 static_assert(sizeof(KVRequest) == 64, "KVRequest must be 64B");
@@ -94,22 +137,55 @@ static_assert(sizeof(KVRequest) == 64, "KVRequest must be 64B");
 // Spec: KVResponse
 //
 // Flows: Worker i → ResponseQueue[client_id][i] → Response Thread j
-// For GET: val_addr is a CXL offset into Worker's DataRegion (zero-copy).
-// For PUT/UPDATE/DELETE: val_addr = 0.
+//
+// block_id_a: primary block to recycle (0 = none)
+// block_id_b: secondary block to recycle, DEL only (0 = none)
+//
+// Response Thread unified recycle logic (no branching):
+//   if (resp.block_id_a != 0) free_block_queue[cid].push(resp.block_id_a);
+//   if (resp.block_id_b != 0) free_block_queue[cid].push(resp.block_id_b);
+//
+// Per-op semantics:
+//   PUT/UPDATE (key existed):  block_id_a=id_old, block_id_b=0
+//   PUT/UPDATE (new key):      block_id_a=0,      block_id_b=0
+//   GET:                       block_id_a=id_req,  block_id_b=0, val_addr/val_len set
+//   DEL (key existed):         block_id_a=id_cmd,  block_id_b=id_data
+//   DEL (key not found):       block_id_a=id_cmd,  block_id_b=0
+//
+// t0 is copied by Worker from UnifiedBlock[id_new].t0, eliminating t0_table side table.
+// sn_id replaces gsn (uint64_t→uint8_t): only used for per-SN latency attribution
+//   when num_synchronizers > 1. Worker fills: sn_id = worker_id / workers_per_sn.
+//
+// Field layout (natural alignment):
+//   [0..1]   status
+//   [2]      op_type
+//   [3]      sn_id
+//   [4..7]   block_id_a
+//   [8..11]  block_id_b
+//   [12..15] val_len
+//   [16..23] val_addr
+//   [24..27] _pad0
+//   [28..31] _pad1
+//   [32..39] t0
+//   [40..47] t1
+//   [48..55] t2
+//   [56..63] t3
 // ============================================================================
 
 struct alignas(64) KVResponse {
     uint16_t status;      // Status enum
-    uint16_t _pad0;
-    uint32_t slot_id;     // For recycling via FreeIDQueue
-    uint64_t val_addr;    // CXL offset: CXLNode.data + key_len (GET only, else 0)
-    uint32_t val_len;     // Value length (GET only)
+    uint8_t  op_type;     // OpType enum
+    uint8_t  sn_id;       // Synchronizer ID for per-SN attribution (was gsn uint64_t)
+    uint32_t block_id_a;  // Primary recycled block (0 = none)
+    uint32_t block_id_b;  // Secondary recycled block, DEL only (0 = none)
+    uint32_t val_len;     // GET only, else 0
+    uint64_t val_addr;    // GET only: cxl_base + id_found*2048 + 64 + key_len
+    uint32_t _pad0;
     uint32_t _pad1;
-    uint64_t gsn;         // Echo from KVRequest
-    uint64_t t3;          // rdtsc: Worker completes operation
-    uint64_t t1;          // rdtsc: copied from KVRequest.t1 (enters RequestQueue)
-    uint64_t t2;          // rdtsc: copied from KVRequest.t2 (Worker dequeues)
-    char     padding[8];
+    uint64_t t0;          // Copied by Worker from UnifiedBlock[id_new].t0
+    uint64_t t1;          // Copied from KVRequest.t1
+    uint64_t t2;          // Copied from KVRequest.t2
+    uint64_t t3;          // rdtscp: Worker completes operation
 };
 static_assert(sizeof(KVResponse) == 64, "KVResponse must be 64B");
 
@@ -118,63 +194,27 @@ static_assert(sizeof(KVResponse) == 64, "KVResponse must be 64B");
 // Spec: CXLBucket
 //
 // Worker i exclusively owns buckets where (bucket_id % num_workers == i).
-// No locks, no atomic CAS on head_offset updates.
+// head_block_id == 0 means empty bucket (block 0 is reserved sentinel).
 // ============================================================================
 
 struct alignas(8) CXLBucket {
-    // CXL offset to first CXLNode, 0 = empty
-    uint64_t head_offset;
+    uint32_t head_block_id; // block_id of first UnifiedBlock in chain (0 = empty)
+    uint32_t _pad;
 };
+static_assert(sizeof(CXLBucket) == 8);
 
 // ============================================================================
-// KV Node in DataRegion (variable size, cache-line aligned header)
-// Spec: CXLNode
+// FreeBlockQueue — Local SPSC for block_id recycling (NOT in CXL)
 //
-// Stored in Worker i's exclusive DataRegion[i].
-// data[] layout: key_len bytes of key, then val_len bytes of value.
-// val_addr in KVResponse points to data + key_len.
-// ============================================================================
-
-struct alignas(64) CXLNode {
-    uint64_t next_offset;  // Offset to next node in chain, 0 = end
-    uint32_t key_len;
-    uint32_t val_len;
-    uint64_t key_hash;     // FNV-1a hash, for fast comparison
-    char     _pad[40];     // Pad header to 64B; data[] follows immediately
-
-    // data[] is key_len bytes of key + val_len bytes of value
-    // Access via: node_ptr + sizeof(CXLNode)
-};
-static_assert(sizeof(CXLNode) == 64, "CXLNode header must be 64B");
-
-// ============================================================================
-// DataRegion Per-Worker Metadata (64B)
-// One per Worker, stored at the start of each DataRegion segment.
-// ============================================================================
-
-struct alignas(64) DataRegionHeader {
-    uint64_t base_offset;        // CXL offset of this DataRegion's start
-    uint64_t total_size;         // Total bytes in this DataRegion
-    uint64_t alloc_offset;       // Bump allocator: next free byte (relative to base_offset)
-    uint64_t free_list_offset;   // CXL offset of first free CXLNode (0 = none)
-    uint64_t nodes_allocated;    // Stats: total nodes ever allocated
-    uint64_t nodes_recycled;     // Stats: total nodes in free list
-    char     _pad[16];
-};
-static_assert(sizeof(DataRegionHeader) == 64);
-
-// ============================================================================
-// FreeIDQueue — Local SPSC for slot ID recycling (NOT in CXL)
+// Producer: Response Thread j (pushes recycled block_ids)
+// Consumer: Request Thread j (drains into LocalBlockCache.stack)
 //
-// Producer: Response Thread j (recycles slot_ids)
-// Consumer: Request Thread j (acquires slot_ids)
-//
+// Same implementation as the former FreeIDQueue; only semantics renamed.
 // Single host only — same process, different threads.
-// Uses volatile + compiler barrier, no cache flushing needed.
 // ============================================================================
 
 template<uint32_t Cap = 4096>
-struct alignas(64) FreeIDQueue {
+struct alignas(64) FreeBlockQueue {
     static_assert((Cap & (Cap - 1)) == 0, "Cap must be power of 2");
 
     alignas(64) volatile uint32_t write_idx;
@@ -183,56 +223,30 @@ struct alignas(64) FreeIDQueue {
     char _pr[60];
     uint32_t slots[Cap];
 
-    // Initialize with slot_ids for client j:
-    //   [j * slots_per_client, (j+1) * slots_per_client)
-    void init(uint32_t client_id, uint32_t slots_per_client) {
+    void init() {
         write_idx = 0;
         read_idx  = 0;
-        uint32_t base = client_id * slots_per_client;
-        uint32_t count = (slots_per_client < Cap) ? slots_per_client : Cap;
-        for (uint32_t i = 0; i < count; i++) {
-            slots[i] = base + i;
-        }
-        write_idx = count;
-        // Memory barrier so consumer sees initialized slots
         asm volatile("" ::: "memory");
     }
 
-    // Push a recycled slot_id (called by Response Thread)
-    bool push(uint32_t slot_id) {
+    // Push a recycled block_id (called by Response Thread)
+    bool push(uint32_t block_id) {
         uint32_t w = write_idx;
         uint32_t r = read_idx;
         asm volatile("" ::: "memory");
         if (w - r >= Cap) return false;  // full
-        slots[w & (Cap - 1)] = slot_id;
+        slots[w & (Cap - 1)] = block_id;
         asm volatile("" ::: "memory");   // store-store barrier
         write_idx = w + 1;
         return true;
     }
 
-    // Pop a free slot_id (called by Request Thread)
-    // Spins until a slot is available.
-    uint32_t pop_spin() {
-        while (true) {
-            uint32_t r = read_idx;
-            asm volatile("" ::: "memory");
-            uint32_t w = write_idx;
-            if (r < w) {
-                uint32_t id = slots[r & (Cap - 1)];
-                asm volatile("" ::: "memory");
-                read_idx = r + 1;
-                return id;
-            }
-            _mm_pause();
-        }
-    }
-
     // Non-blocking pop (returns false if empty)
-    bool pop(uint32_t& slot_id) {
+    bool pop(uint32_t& block_id) {
         uint32_t r = read_idx;
         asm volatile("" ::: "memory");
         if (r >= write_idx) return false;
-        slot_id = slots[r & (Cap - 1)];
+        block_id = slots[r & (Cap - 1)];
         asm volatile("" ::: "memory");
         read_idx = r + 1;
         return true;

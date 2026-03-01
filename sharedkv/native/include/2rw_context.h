@@ -30,7 +30,7 @@ namespace TwoRW {
 //   --num-clients N
 //   --num-workers N
 //   --num-synchronizers N  (must divide num_workers evenly, default 1)
-//   --slots-per-client N   (must be ≤ QUEUE_CAP = 4096)
+//   --slots-per-client N   (blocks pre-allocated per client, must be ≤ QUEUE_CAP)
 //   --num-buckets N        (must be power of 2)
 //   --queue-depth N        (must be ≤ QUEUE_CAP = 4096, power of 2)
 //   --memory-size N        (bytes, e.g. 17179869184 for 16GB)
@@ -46,12 +46,15 @@ struct TwoRWConfig {
     uint32_t num_clients        = 4;          // n: Request/Response threads
     uint32_t num_workers        = 8;          // m: Worker threads
     uint32_t num_synchronizers  = 1;          // s: Synchronizer threads (m % s == 0)
-    uint32_t slots_per_client   = 1024;       // K: Pool slots per client
+    uint32_t slots_per_client   = 1024;       // K: blocks pre-allocated per client at init
     uint32_t num_buckets        = 4096;       // Hash table buckets (power of 2)
     uint32_t queue_depth        = 1024;       // SPSC ring depth (≤ QUEUE_CAP)
-    uint64_t memory_size        = 16ULL << 30; // 16 GB
+    uint64_t memory_size        = 64ULL << 30; // 64 GB
     int      worker_cpu_start   = -1;         // -1 = auto: 1 + num_synchronizers
     bool     local_workerring   = false;      // WorkerRing on local DRAM (vs CXL)
+    bool     stats_enabled      = false;      // per-op chain traversal stats + bucket scan
+    bool     verbose            = false;      // per-thread lifecycle messages + client summary
+    bool     counters_enabled   = false;      // pipeline-wide enqueue/dequeue counters per role
 
     // ---- Parsing ----
 
@@ -111,7 +114,7 @@ struct TwoRWConfig {
             "  num_clients (n)      = %u\n"
             "  num_workers (m)      = %u\n"
             "  num_synchronizers(s) = %u  (workers per SN: %u)\n"
-            "  slots_per_client     = %u  (pool slots per client)\n"
+            "  slots_per_client     = %u  (blocks pre-alloc per client)\n"
             "  num_buckets          = %u\n"
             "  queue_depth          = %u\n"
             "  memory_size          = %zu MB\n"
@@ -134,6 +137,56 @@ struct TwoRWConfig {
         if ((num_buckets & (num_buckets - 1)) != 0) return false;
         return true;
     }
+};
+
+// ============================================================================
+// WorkerOpStats — per-Worker operation traversal statistics
+//
+// Accumulated during hot loop (when stats_enabled=true), stored in
+// WorkerThreadState.exit_stats at thread exit.  Ownership transfers to the
+// main thread, which prints and deletes them via two_rw_print_worker_stats().
+//
+// depth = chain nodes dereferenced in the while loop per operation.
+// CXL random reads per op = 1 (request block) + depth (chain nodes).
+// ============================================================================
+
+struct WorkerOpStats {
+    struct PerOp {
+        uint64_t total     = 0;
+        uint64_t hit       = 0;     // key found (GET/DEL: match; PUT: update existing)
+        uint64_t miss      = 0;     // key not found (GET/DEL: miss; PUT: new insert)
+        uint64_t chain_sum = 0;     // total chain nodes traversed across all ops
+        // hist[d] = # ops traversing exactly d nodes (d=0..15; d=16 means 16+)
+        uint64_t hist[17]  = {};
+    };
+    PerOp get;
+    PerOp put;        // PUT / UPDATE
+    PerOp del;
+
+    void record(PerOp& op, uint32_t depth, bool found) {
+        op.total++;
+        op.chain_sum += depth;
+        if (found) op.hit++;
+        else       op.miss++;
+        op.hist[(depth < 16) ? depth : 16]++;
+    }
+};
+
+// ============================================================================
+// LocalBlockCache — per Request Thread block ID pool
+//
+// Two-layer design:
+//   ① local_stack[1024]: RT-private LIFO stack, zero concurrency overhead.
+//      Filled from FreeBlockQueue (recycled blocks) or Global Bitmap (fresh blocks).
+//   ② FreeBlockQueue: SPSC bridge from Response Thread → RT.
+//      RT drains it into local_stack when stack runs low.
+//
+// RT acquires block_id via two_rw_acquire_block() (see below).
+// ============================================================================
+
+struct alignas(64) LocalBlockCache {
+    uint32_t stack[1024];
+    uint32_t top = 0;   // number of valid entries in stack[]
 };
 
 // ============================================================================
@@ -161,20 +214,15 @@ struct SyncThreadState {
     uint32_t workers_count;     // number of workers managed by this SN (m/s)
 
     // GSN — on its own cache line, written by this SN every op.
-    // Embedded here (not in TwoRWContext) because TwoRWContext's cache line
-    // is shared with std::thread objects that the C++ runtime may write during
-    // execution, causing false sharing.
-    // SyncThreadState is accessed ONLY by its own Sync thread → zero contention.
-    // Initial value = sn_id (for interleaved GSN: SN_k generates k, k+s, k+2s, ...)
     alignas(64) std::atomic<uint64_t> gsn{0};
 };
 
 struct WorkerThreadState {
     uint32_t             worker_id;
+    uint8_t              sn_id_for_resp;   // pre-computed: worker_id / (m/s), for KVResponse.sn_id
     TwoRWLayout*         layout;
     void*                cxl_base;
     std::atomic<bool>*   stop_flag;
-    DataRegionHeader*    region_meta;    // This worker's DataRegion metadata
     // Consumer for WorkerRing[worker_id] (CXL path)
     CXLSpscConsumer<KVRequest, QUEUE_CAP>* ring_consumer;
     // Consumer for local DRAM WorkerRing[worker_id] (--local-workerring path)
@@ -183,6 +231,18 @@ struct WorkerThreadState {
     // Producers for ResponseQueue[*][worker_id]: base pointer, indexed [j*num_workers+wid]
     CXLSpscProducer<KVResponse, QUEUE_CAP>* resp_producers; // [num_clients * num_workers]
     uint32_t num_clients;
+    bool     stats_enabled  = false;   // collect per-op traversal depth stats
+
+    // ---- Exit stats (written once at thread exit, read by main after join) ----
+    uint64_t       exit_ops_done       = 0;   // total KV operations completed by this worker
+    uint64_t       exit_empty_polls    = 0;   // times worker polled WorkerRing and found it empty
+    uint64_t       exit_resp_fullwaits = 0;   // times worker tried to enqueue a KVResponse to
+                                              // ResponseQueue[client][wid] but the CXL SPSC ring
+                                              // was full, causing the worker to spin-wait.
+                                              // Non-zero values indicate RespThread is too slow
+                                              // to drain responses, back-pressuring the worker
+                                              // and ultimately causing SN ring_fullwaits.
+    WorkerOpStats* exit_stats       = nullptr;  // non-null if stats_enabled; main frees
 };
 
 struct PollerThreadState {
@@ -194,6 +254,13 @@ struct PollerThreadState {
     // UINTR fds for Response Threads — set by Response Threads, read by Poller
     int*                 resp_uintr_fds;   // [num_clients], -1 if not registered
     std::atomic<bool>*   resp_fd_ready;    // [num_clients]
+
+    // ---- Exit counters (written once at thread exit, read by main after join) ----
+    uint64_t exit_scan_rounds = 0;   // full scan rounds over all n clients;
+                                     // each round checks n×m ResponseQueues for non-empty.
+    uint64_t exit_uintrs_sent = 0;   // UINTR IPIs sent to Response Threads.
+                                     // High ratio of scan_rounds/uintrs_sent means
+                                     // Poller is scanning frequently but rarely finding work.
 };
 
 // ============================================================================
@@ -205,15 +272,14 @@ struct TwoRWContext {
     TwoRWLayout  layout;
     void*        cxl_base  = nullptr;
 
-    // FreeIDQueues are local (heap), one per client
-    FreeIDQueue<QUEUE_CAP>* free_id_queues = nullptr;  // [num_clients]
+    // Per-client block ID pools (local DRAM)
+    LocalBlockCache*         local_block_caches = nullptr;  // [num_clients]
+    FreeBlockQueue<QUEUE_CAP>* free_block_queues = nullptr; // [num_clients]
 
     // Request thread → SN producers: [n * s], indexed [client_id * s + sn_id]
     CXLSpscProducer<KVRequest,  QUEUE_CAP>* req_producers  = nullptr;
 
     // Per-SN consumer/producer arrays (NUMA-allocated on each SN's CPU node)
-    // sn_req_consumers[k]  → [n] consumers for SN k's RequestQueues
-    // sn_ring_producers[k] → [m/s] CXL producers for SN k's WorkerRings
     CXLSpscConsumer<KVRequest,  QUEUE_CAP>** sn_req_consumers  = nullptr;  // [s] ptrs
     CXLSpscProducer<KVRequest,  QUEUE_CAP>** sn_ring_producers = nullptr;  // [s] ptrs
 
@@ -230,7 +296,6 @@ struct TwoRWContext {
     CXLSpscConsumer<KVResponse, QUEUE_CAP>* resp_consumers = nullptr;
 
     // Local DRAM WorkerRing (used when config.local_workerring == true)
-    // Flat arrays [m], indexed by global worker_id
     LocalSpscQueue<KVRequest,    QUEUE_CAP>* local_rings          = nullptr;
     LocalSpscProducer<KVRequest, QUEUE_CAP>* local_ring_producers = nullptr;
     LocalSpscConsumer<KVRequest, QUEUE_CAP>* local_ring_consumers = nullptr;
@@ -239,8 +304,12 @@ struct TwoRWContext {
     int*                resp_uintr_fds  = nullptr;  // [num_clients]
     std::atomic<bool>*  resp_fd_ready   = nullptr;  // [num_clients]
 
+    // Global block bump allocator — used when LocalBlockCache and FreeBlockQueue are empty.
+    // Initialized to n*slots_per_client+1 (beyond the pre-filled range).
+    // Each RT atomically claims fresh block IDs from the UnifiedBlockPool.
+    alignas(64) std::atomic<uint32_t>    block_alloc_next{1};
+
     // Thread control
-    // stop_flag on its own cache line: read by Workers/Poller/SNs in hot loops.
     alignas(64) std::atomic<bool>        stop_flag{false};
     std::vector<std::thread>             synchronizer_threads;  // [s]
     std::thread                          poller_thread;
@@ -256,46 +325,93 @@ struct TwoRWContext {
 // Public API
 // ============================================================================
 
-// Initialize CXL memory, allocate all context structures.
-// Returns non-null on success. Call two_rw_destroy() when done.
 TwoRWContext* two_rw_init(const TwoRWConfig& config);
-
-// Start Poller (CPU 0), Synchronizers (CPU 1..s), Workers (CPU s+1..s+m).
 void two_rw_start_threads(TwoRWContext* ctx);
-
-// Drain and stop all threads (pipeline drain order per spec §6).
 void two_rw_stop(TwoRWContext* ctx);
-
-// Join threads, free memory, unmap CXL.
 void two_rw_destroy(TwoRWContext* ctx);
 
+// Print worker exit stats in order 0..m-1.
+// Call after two_rw_stop() (all workers joined).
+// Prints: ops/empty_polls when verbose; op breakdown when stats_enabled.
+// Frees WorkerOpStats allocated by each worker thread.
+void two_rw_print_worker_stats(TwoRWContext* ctx);
+
+// Scan bucket table and print chain-length distribution.
+// Call after LOAD phase (main thread, workers idle) when stats_enabled.
+void two_rw_print_bucket_stats(TwoRWContext* ctx);
+
 // ============================================================================
-// Per-Thread Accessor Helpers (inline, used by YCSB benchmark code)
+// Per-Thread Accessor Helpers (inline, used by benchmark code)
 // ============================================================================
 
-// Request Thread j: acquire a slot_id (spins until available)
-inline uint32_t two_rw_acquire_slot(TwoRWContext* ctx, uint32_t client_id) {
-    return ctx->free_id_queues[client_id].pop_spin();
+// Request Thread j: acquire a block_id from the local cache.
+// Priority: local_stack → drain FreeBlockQueue → global bump allocator → OOM abort.
+//
+// The bump allocator path handles PUT of new keys: the block stays in the hash
+// table (block_id_a == 0 returned), so the RT's pre-allocated stock is never
+// recycled back for those ops.  The GlobalIDMap bump counter provides an
+// unlimited supply of fresh blocks up to layout.total_blocks.
+inline uint32_t two_rw_acquire_block(TwoRWContext* ctx, uint32_t client_id) {
+    LocalBlockCache& cache = ctx->local_block_caches[client_id];
+
+    // 1. Local stack: fastest path, no shared-memory access
+    if (cache.top > 0) return cache.stack[--cache.top];
+
+    // 2. Drain FreeBlockQueue into local stack (up to 256 at once)
+    FreeBlockQueue<QUEUE_CAP>& q = ctx->free_block_queues[client_id];
+    uint32_t id;
+    while (cache.top < 256) {
+        if (!q.pop(id)) break;
+        cache.stack[cache.top++] = id;
+    }
+    if (cache.top > 0) return cache.stack[--cache.top];
+
+    // 3. Fresh block from global bump counter (new-key INSERT path)
+    uint32_t fresh = ctx->block_alloc_next.fetch_add(1, std::memory_order_relaxed);
+    if (fresh < ctx->layout.total_blocks) return fresh;
+
+    // 4. UnifiedBlockPool exhausted
+    fprintf(stderr, "[RT-%u] UnifiedBlockPool exhausted (total_blocks=%u)\n",
+            client_id, ctx->layout.total_blocks);
+    abort();
 }
 
-// Request Thread j: get a pointer to Pool[slot_id] (for writing KV data)
-inline KVPoolSlot* two_rw_get_pool_slot(TwoRWContext* ctx, uint32_t slot_id) {
-    return CXLPtr<KVPoolSlot>(ctx->layout.pool_slot_offset(slot_id)).get();
+// Request Thread j: pointer to UnifiedBlock for the given block_id
+inline UnifiedBlock* two_rw_get_unified_block(TwoRWContext* ctx, uint32_t block_id) {
+    return ctx->layout.unified_block_ptr(ctx->cxl_base, block_id);
 }
 
-// Request Thread j: submit request (after filling Pool slot and sfence)
-// Routes to req_producers[client_id * s + sn_id] where sn_id = worker_id / (m/s)
+// Request Thread j: submit request (after filling UnifiedBlock and sfence).
+// Routes to req_producers[client_id * s + sn_id] where sn_id = worker_id / (m/s).
 inline bool two_rw_submit(TwoRWContext* ctx, uint32_t client_id,
-                           uint32_t slot_id, uint32_t worker_id) {
+                           uint32_t block_id, uint32_t worker_id, uint8_t op_type) {
     const uint32_t s             = ctx->config.num_synchronizers;
     const uint32_t workers_per_sn = ctx->config.num_workers / s;
     const uint32_t sn_id         = worker_id / workers_per_sn;
     KVRequest req{};
     req.worker_id = worker_id;
-    req.slot_id   = slot_id;
+    req.block_id  = block_id;
     req.client_id = client_id;
+    req.op_type   = op_type;
     req.t1        = __rdtsc();
     return ctx->req_producers[client_id * s + sn_id].enqueue(req);
+}
+
+// Drain recycled block IDs from FreeBlockQueue into the local cache.
+// Must be called by Request Thread while spinning on submit to prevent deadlock:
+//   RT blocked on RequestQueue full → can't call two_rw_acquire_block() →
+//   FreeBlockQueue stays full → RespThread blocked on push() →
+//   ResponseQueues fill → Workers block → WorkerRings fill → SN blocks →
+//   RequestQueues stay full → RT stays blocked (circular).
+// This drain breaks the cycle by keeping FreeBlockQueue consumable.
+inline void two_rw_drain_freeblocks(TwoRWContext* ctx, uint32_t client_id) {
+    LocalBlockCache& cache = ctx->local_block_caches[client_id];
+    FreeBlockQueue<QUEUE_CAP>& q = ctx->free_block_queues[client_id];
+    uint32_t id;
+    while (cache.top < 1024) {
+        if (!q.pop(id)) break;
+        cache.stack[cache.top++] = id;
+    }
 }
 
 // Hash helper: compute worker_id from key

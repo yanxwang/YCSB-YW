@@ -33,6 +33,16 @@ static uint64_t wall_usec() {
     return tv.tv_sec * 1000000ULL + tv.tv_usec;
 }
 
+// FNV-1a 32-bit (for block->key_hash; same base as two_rw_route, truncated)
+static inline uint32_t key_hash_fnv1a(const char* data, uint32_t len) {
+    uint64_t h = 14695981039346656037ULL;
+    for (uint32_t i = 0; i < len; i++) {
+        h ^= static_cast<uint8_t>(data[i]);
+        h *= 1099511628211ULL;
+    }
+    return static_cast<uint32_t>(h);
+}
+
 static OpType ycsb_to_2rw_op(YCSBOpType op) {
     switch (op) {
         case YCSBOpType::INSERT:             return OpType::PUT;
@@ -62,12 +72,11 @@ static OpType ycsb_to_2rw_op(YCSBOpType op) {
 
 static void* request_thread_fn(void* arg) {
     auto* a = static_cast<ReqThreadArgs*>(arg);
-    TwoRWContext* const ctx        = a->ctx;
-    const uint32_t      cid        = a->client_id;
-    const uint32_t      m          = ctx->config.num_workers;
-    const uint32_t      base_slot  = cid * ctx->config.slots_per_client;
-    const auto&         ops        = *a->operations;
-    const uint32_t      op_count   = static_cast<uint32_t>(ops.size());
+    TwoRWContext* const ctx      = a->ctx;
+    const uint32_t      cid      = a->client_id;
+    const uint32_t      m        = ctx->config.num_workers;
+    const auto&         ops      = *a->operations;
+    const uint32_t      op_count = static_cast<uint32_t>(ops.size());
 
     pin_current_thread_to_cpu(a->cpu_id);
     CXLBase::set(ctx->cxl_base);
@@ -75,6 +84,8 @@ static void* request_thread_fn(void* arg) {
     pthread_barrier_wait(a->barrier);
 
     uint64_t local_submitted = 0;
+    uint64_t req_enq_waits  = 0;   // times two_rw_submit() returned false (RequestQueue full)
+    uint32_t aux;
 
     for (uint32_t i = 0; ; i++) {
         // Stop condition
@@ -86,52 +97,50 @@ static void* request_thread_fn(void* arg) {
 
         const YCSBOperation& op = ops[(a->ops_start + i) % op_count];
 
-        // Step 1: Acquire free slot (spins — natural flow control)
-        uint32_t slot_id = two_rw_acquire_slot(ctx, cid);
-        KVPoolSlot* slot = two_rw_get_pool_slot(ctx, slot_id);
+        // Step 1: Acquire free block_id (spins — natural flow control)
+        uint32_t     block_id = two_rw_acquire_block(ctx, cid);
+        UnifiedBlock* block   = two_rw_get_unified_block(ctx, block_id);
 
-        // Step 2: Fill pool slot
-        slot->magic   = POOL_MAGIC;
-        slot->op_type = static_cast<uint8_t>(ycsb_to_2rw_op(op.op_type));
-
+        // Step 2: Fill UnifiedBlock (key + value + metadata)
         const uint32_t klen = static_cast<uint32_t>(
             std::min(op.key.size(), size_t(127)));
-        memcpy(slot->key, op.key.data(), klen);
-        slot->key[klen] = '\0';
-        slot->key_len   = klen;
+        block->key_hash = key_hash_fnv1a(op.key.data(), klen);
+        block->key_len  = static_cast<uint16_t>(klen);
+        memcpy(block->data, op.key.data(), klen);
 
         if (op.op_type == YCSBOpType::INSERT  ||
             op.op_type == YCSBOpType::UPDATE   ||
             op.op_type == YCSBOpType::READ_MODIFY_WRITE) {
             const uint32_t vlen = static_cast<uint32_t>(
                 std::min(op.value.size(), size_t(1855)));
-            memcpy(slot->value, op.value.data(), vlen);
-            slot->val_len = vlen;
+            block->val_len = vlen;
+            memcpy(block->data + klen, op.value.data(), vlen);
         } else {
-            slot->val_len = 0;
+            block->val_len = 0;
         }
+        block->is_external = 0;
+        block->t0 = __rdtscp(&aux);
+        _mm_sfence();  // ensure block data visible before block_id flows
 
-        slot->t0 = __rdtsc();
-        _mm_sfence();  // spec §4 step 1: ensure pool data visible before slot_id flows
-
-        // Step 3: Record t0 before slot can be reused by another op
-        a->ctrl->t0_table[slot_id - base_slot] = slot->t0;
-
-        // Step 4: Submit (spin if RequestQueue full)
-        const uint32_t worker_id = two_rw_route(slot->key, klen, m);
-        while (!two_rw_submit(ctx, cid, slot_id, worker_id)) {
+        // Step 3: Submit (spin if RequestQueue full)
+        const uint8_t  op_type   = static_cast<uint8_t>(ycsb_to_2rw_op(op.op_type));
+        const uint32_t worker_id = two_rw_route(op.key.data(), klen, m);
+        while (!two_rw_submit(ctx, cid, block_id, worker_id, op_type)) {
+            two_rw_drain_freeblocks(ctx, cid);  // prevent deadlock with RespThread
+            req_enq_waits++;
             _mm_pause();
             if (*a->should_stop) goto req_done;
         }
 
-        // Step 5: Count
+        // Step 4: Count
         local_submitted++;
         a->ctrl->submitted.fetch_add(1, std::memory_order_relaxed);
     }
 
 req_done:
+    a->out_submitted      = local_submitted;
+    a->out_req_enq_waits  = req_enq_waits;
     a->ctrl->req_done.store(true, std::memory_order_release);
-    fprintf(stderr, "[ReqTh-%u] Done. submitted=%lu\n", cid, local_submitted);
     return nullptr;
 }
 
@@ -153,7 +162,6 @@ static void* response_thread_fn(void* arg) {
     const uint32_t      cid       = a->client_id;
     const uint32_t      m         = ctx->config.num_workers;
     const uint32_t      s         = a->num_synchronizers;
-    const uint32_t      base_slot = cid * ctx->config.slots_per_client;
     ClientControl&      ctrl      = *a->ctrl;
 
     pin_current_thread_to_cpu(a->cpu_id);
@@ -169,11 +177,12 @@ static void* response_thread_fn(void* arg) {
             ctx->resp_uintr_fds[cid] = static_cast<int>(fd);
             ctx->resp_fd_ready[cid].store(true, std::memory_order_release);
             uintr_ok = true;
-            fprintf(stderr, "[RespTh-%u] UINTR fd=%ld, pinned CPU %d\n",
-                    cid, fd, a->cpu_id);
+            if (a->verbose)
+                fprintf(stderr, "[RespTh-%u] UINTR fd=%ld, pinned CPU %d\n",
+                        cid, fd, a->cpu_id);
         }
     }
-    if (!uintr_ok) {
+    if (!uintr_ok && a->verbose) {
         fprintf(stderr,
             "[RespTh-%u] UINTR unavailable — busy-poll fallback, CPU %d\n",
             cid, a->cpu_id);
@@ -183,8 +192,12 @@ static void* response_thread_fn(void* arg) {
 
     pthread_barrier_wait(a->barrier);
 
-    uint64_t completed = 0;
-    uint64_t failed    = 0;
+    uint64_t completed      = 0;
+    uint64_t failed         = 0;
+    uint64_t drain_rounds   = 0;   // completed full scans through all m ResponseQueues
+    uint64_t empty_rounds   = 0;   // scan rounds where zero responses were dequeued
+    uint64_t uintr_wakeups  = 0;   // times woken from uintr_wait() by Poller IPI
+    uint64_t recycle_waits  = 0;   // times FreeBlockQueue.push() spun (RT hasn't drained)
     if (a->measure_latency) {
         a->out_stage0_ticks.reserve(65536);
         a->out_stage1_ticks.reserve(65536);
@@ -219,6 +232,7 @@ static void* response_thread_fn(void* arg) {
     while (true) {
         // Drain all m ResponseQueues for this client
         bool drained_any = true;
+        bool drained_any_this_epoch = false;
         while (drained_any) {
             drained_any = false;
             for (uint32_t i = 0; i < m; i++) {
@@ -227,23 +241,23 @@ static void* response_thread_fn(void* arg) {
                 if (count == 0) continue;
 
                 drained_any = true;
+                drained_any_this_epoch = true;
                 for (uint64_t k = 0; k < count; k++) {
                     const KVResponse& resp = batch[k];
 
-                    // Record latency before recycling slot
+                    // Record latency (t0 comes directly from resp.t0, no side table)
                     if (a->measure_latency) {
-                        const uint32_t local = resp.slot_id - base_slot;
-                        const uint64_t t0    = ctrl.t0_table[local];
-                        const uint64_t t1    = resp.t1;
-                        const uint64_t t2    = resp.t2;
-                        const uint64_t t3    = resp.t3;
+                        const uint64_t t0 = resp.t0;
+                        const uint64_t t1 = resp.t1;
+                        const uint64_t t2 = resp.t2;
+                        const uint64_t t3 = resp.t3;
                         if (t0 != 0 && t1 >= t0 && t2 >= t1 && t3 >= t2) {
                             a->out_stage0_ticks.push_back(t1 - t0);
                             a->out_stage1_ticks.push_back(t2 - t1);
                             a->out_stage2_ticks.push_back(t3 - t2);
                             a->out_total_ticks.push_back(t3 - t0);
                             if (s > 1) {
-                                const uint32_t sn = static_cast<uint32_t>(resp.gsn % s);
+                                const uint32_t sn = resp.sn_id;
                                 a->out_sn_stage1_ticks[sn].push_back(t2 - t1);
                                 a->out_sn_total_ticks[sn].push_back(t3 - t0);
                             }
@@ -251,11 +265,26 @@ static void* response_thread_fn(void* arg) {
                     }
                     // Per-SN op count (always tracked when s > 1)
                     if (s > 1) {
-                        a->out_sn_ops[static_cast<uint32_t>(resp.gsn % s)]++;
+                        a->out_sn_ops[resp.sn_id]++;
                     }
 
-                    // Recycle slot_id → FreeIDQueue (unblocks Request Thread)
-                    ctx->free_id_queues[cid].push(resp.slot_id);
+                    // Recycle block IDs → FreeBlockQueue (unblocks Request Thread).
+                    // Spin if the queue is full rather than silently dropping the ID.
+                    // When the queue is full it means the RT is blocked on submit;
+                    // once the RT submits a request it calls two_rw_acquire_block()
+                    // which drains the queue, so this spin always makes progress.
+                    // Exception: if the RT has already finished all its ops (req_done),
+                    // the block is no longer needed and can be discarded safely.
+                    auto recycle = [&](uint32_t id) {
+                        if (id == 0) return;
+                        while (!ctx->free_block_queues[cid].push(id)) {
+                            recycle_waits++;
+                            if (ctrl.req_done.load(std::memory_order_relaxed)) return;
+                            _mm_pause();
+                        }
+                    };
+                    recycle(resp.block_id_a);
+                    recycle(resp.block_id_b);
 
                     if (static_cast<Status>(resp.status) == Status::SUCCESS) {
                         completed++;
@@ -273,6 +302,12 @@ static void* response_thread_fn(void* arg) {
             }
         }
 
+        drain_rounds++;
+        if (!drained_any_this_epoch) {
+            empty_rounds++;
+        }
+        drained_any_this_epoch = false;
+
         // Update shared counter
         ctrl.responded.store(completed + failed, std::memory_order_release);
 
@@ -287,6 +322,7 @@ static void* response_thread_fn(void* arg) {
         // Wait for Poller's UINTR edge signal (or busy-poll fallback)
         if (uintr_ok) {
             uintr_wait(0);
+            uintr_wakeups++;
         } else {
             _mm_pause();
         }
@@ -302,11 +338,12 @@ static void* response_thread_fn(void* arg) {
         uintr_unregister_handler(0);
     }
 
-    a->out_completed = completed;
-    a->out_failed    = failed;
-    fprintf(stderr,
-        "[RespTh-%u] Done. completed=%lu  failed=%lu  latency_samples=%zu\n",
-        cid, completed, failed, a->out_total_ticks.size());
+    a->out_completed      = completed;
+    a->out_failed         = failed;
+    a->out_drain_rounds   = drain_rounds;
+    a->out_empty_rounds   = empty_rounds;
+    a->out_uintr_wakeups  = uintr_wakeups;
+    a->out_recycle_waits  = recycle_waits;
     return nullptr;
 }
 
@@ -327,9 +364,8 @@ PhaseResult run_2rw_phase(
     assert(num_clients == ctx->config.num_clients);
     assert(!ops.empty());
 
-    const uint32_t n               = num_clients;
-    const uint32_t slots_per_client = ctx->config.slots_per_client;
-    const uint32_t op_count         = static_cast<uint32_t>(ops.size());
+    const uint32_t n        = num_clients;
+    const uint32_t op_count = static_cast<uint32_t>(ops.size());
 
     // Barrier: n request threads + n response threads + main thread
     pthread_barrier_t barrier;
@@ -337,11 +373,8 @@ PhaseResult run_2rw_phase(
 
     volatile bool stop_flag = false;
 
-    // Allocate per-client control blocks and t0 side-tables
+    // Per-client control blocks
     std::vector<ClientControl> ctrl(n);
-    for (uint32_t j = 0; j < n; j++) {
-        ctrl[j].t0_table = new uint64_t[slots_per_client]();  // zero-initialized
-    }
 
     // Build thread argument arrays
     std::vector<ReqThreadArgs>  req_args(n);
@@ -367,6 +400,7 @@ PhaseResult run_2rw_phase(
         resp_args[j].client_id         = j;
         resp_args[j].cpu_id            = cpu_start + static_cast<int>(n) + static_cast<int>(j);
         resp_args[j].measure_latency   = measure_latency;
+        resp_args[j].verbose           = ctx->config.verbose;
         resp_args[j].should_stop       = &stop_flag;
         resp_args[j].barrier           = &barrier;
         resp_args[j].ctrl              = &ctrl[j];
@@ -409,6 +443,66 @@ PhaseResult run_2rw_phase(
     }
     uint64_t t_end = wall_usec();
 
+    // Verbose: print per-client summary in order 0..n-1 (no interleaving risk here)
+    if (ctx->config.verbose) {
+        printf("--- Client Thread Summary ---\n");
+        for (uint32_t j = 0; j < n; j++) {
+            printf("  Client %-3u  submitted=%-10lu  completed=%-10lu  failed=%lu",
+                   j,
+                   req_args[j].out_submitted,
+                   resp_args[j].out_completed,
+                   resp_args[j].out_failed);
+            if (!resp_args[j].out_total_ticks.empty())
+                printf("  latency_samples=%zu", resp_args[j].out_total_ticks.size());
+            printf("\n");
+        }
+        printf("-----------------------------\n");
+    }
+
+    // ---- Pipeline Counters (gated by --counters) ----
+    if (ctx->config.counters_enabled) {
+        printf("\n===== Pipeline Counters =====\n");
+
+        // ── Request Threads ──
+        printf("\n--- Request Threads (enqueue → RequestQueue) ---\n");
+        printf("  %-8s  %12s  %12s\n", "Client", "submitted", "enq_waits");
+        uint64_t total_submitted = 0, total_req_waits = 0;
+        for (uint32_t j = 0; j < n; j++) {
+            printf("  RT-%-5u  %12lu  %12lu\n",
+                   j, req_args[j].out_submitted, req_args[j].out_req_enq_waits);
+            total_submitted  += req_args[j].out_submitted;
+            total_req_waits  += req_args[j].out_req_enq_waits;
+        }
+        printf("  %-8s  %12lu  %12lu\n", "TOTAL", total_submitted, total_req_waits);
+
+        // ── Response Threads ──
+        printf("\n--- Response Threads (dequeue ← ResponseQueue) ---\n");
+        printf("  %-8s  %12s  %12s  %12s  %12s  %12s\n",
+               "Client", "completed", "failed", "drain_rounds", "empty_rounds", "uintr_wakes");
+        uint64_t tot_comp = 0, tot_fail = 0, tot_drain = 0, tot_empty = 0,
+                 tot_uintr = 0, tot_recycle = 0;
+        for (uint32_t j = 0; j < n; j++) {
+            printf("  RT-%-5u  %12lu  %12lu  %12lu  %12lu  %12lu\n",
+                   j,
+                   resp_args[j].out_completed,
+                   resp_args[j].out_failed,
+                   resp_args[j].out_drain_rounds,
+                   resp_args[j].out_empty_rounds,
+                   resp_args[j].out_uintr_wakeups);
+            tot_comp    += resp_args[j].out_completed;
+            tot_fail    += resp_args[j].out_failed;
+            tot_drain   += resp_args[j].out_drain_rounds;
+            tot_empty   += resp_args[j].out_empty_rounds;
+            tot_uintr   += resp_args[j].out_uintr_wakeups;
+            tot_recycle += resp_args[j].out_recycle_waits;
+        }
+        printf("  %-8s  %12lu  %12lu  %12lu  %12lu  %12lu\n",
+               "TOTAL", tot_comp, tot_fail, tot_drain, tot_empty, tot_uintr);
+        printf("  recycle_waits (total): %lu\n", tot_recycle);
+
+        printf("\n=============================\n");
+    }
+
     // Aggregate results
     PhaseResult result{};
     result.duration_usec = t_end - t_start;
@@ -446,7 +540,6 @@ PhaseResult run_2rw_phase(
             for (uint32_t k = 0; k < s; k++)
                 result.sn_ops[k] += resp_args[j].out_sn_ops[k];
         }
-        delete[] ctrl[j].t0_table;
     }
 
     pthread_barrier_destroy(&barrier);

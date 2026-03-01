@@ -1,24 +1,32 @@
 // ============================================================================
-// SharedKV 2RW — Worker Thread (CPU 2+n+i)
+// SharedKV 2RW — Worker Thread (CPU w_base+i)
 //
 // Responsibilities:
 //   1. Dequeue KVRequest from WorkerRing[worker_id]
-//   2. Read key (and value for PUT/UPDATE) from Pool[slot_id] via CXLPtr
-//   3. Execute KV operation on own DataRegion[i] (no locks)
+//   2. Read key/val/hash from UnifiedBlock[block_id] (written by RT, sfenced)
+//   3. Execute KV operation on own bucket partition (no locks)
 //   4. Write KVResponse to ResponseQueue[client_id][worker_id]
 //
-// KV Operations:
-//   PUT/UPDATE: allocate CXLNode (free list → bump), copy key+value, link to bucket
-//   GET:        traverse bucket chain, set val_addr = offset of value bytes
-//   DELETE:     unlink CXLNode, prepend to free list
+// Block Swap Protocol (PUT/UPDATE):
+//   RT fills block_new = UnifiedBlock[id_new], sfence, enqueues id_new.
+//   Worker traverses bucket chain, finds id_old (or not), swaps pointers,
+//   returns id_old via block_id_a for recycling. Zero memcpy.
 //
-// Memory fence protocol (spec §4):
-//   - sfence before linking node to bucket (chain integrity)
-//   - sfence before updating write_idx in ResponseQueue (result visibility)
+// GET:   return val_addr = pointer into found block's data; recycle id_req.
+// DEL:   unlink data block; recycle both id_cmd (block_id_a) and id_data (block_id_b).
+//
+// Memory fence protocol:
+//   - sfence before updating bucket head / chain pointer (chain integrity)
+//   - sfence inside CXLSpscProducer::enqueue (result visibility)
+//
+// Stats:
+//   When stats_enabled, each kv_* function records chain traversal depth
+//   into WorkerOpStats (heap-allocated, pointer stored in WorkerThreadState).
+//   No output is produced from the worker thread itself — the main thread
+//   prints all stats in order via two_rw_print_worker_stats() after joining.
 // ============================================================================
 
 #include "2rw_context.h"
-#include "cxl_ptr.h"
 #include <cstdio>
 #include <cstring>
 #include <immintrin.h>
@@ -27,187 +35,120 @@
 namespace TwoRW {
 
 // ============================================================================
-// Hash Function (FNV-1a)
+// Inline address helper — avoid casting noise throughout
 // ============================================================================
 
-static inline uint64_t fnv1a(const char* data, uint32_t len) {
-    uint64_t h = 14695981039346656037ULL;
-    for (uint32_t i = 0; i < len; i++) {
-        h ^= static_cast<uint8_t>(data[i]);
-        h *= 1099511628211ULL;
-    }
-    return h;
+static inline UnifiedBlock* ub(void* base, uint32_t id) {
+    return reinterpret_cast<UnifiedBlock*>(
+        static_cast<char*>(base) + static_cast<uint64_t>(id) * 2048ULL);
 }
 
 // ============================================================================
-// DataRegion Allocator
-// Returns CXL offset of allocated block, or 0 on OOM.
-// Allocation is local to this worker — no contention.
+// KV PUT / UPDATE — Block Swap Protocol
+//
+// RT wrote key/val/hash into block_new and sfenced before enqueuing.
+// Worker swaps id_new in, returns id_old via block_id_a (0 = new key).
 // ============================================================================
 
-static uint64_t region_alloc(DataRegionHeader* meta, uint64_t size,
-                               uint64_t alignment = 64) {
-    uint64_t aligned_off = (meta->alloc_offset + alignment - 1) & ~(alignment - 1);
-    if (aligned_off + size > meta->total_size) {
-        return 0;  // Out of memory
-    }
-    uint64_t result_cxl_off = meta->base_offset + aligned_off;
-    meta->alloc_offset = aligned_off + size;
-    meta->nodes_allocated++;
-    return result_cxl_off;
-}
-
-// ============================================================================
-// Free List: pop a reusable CXLNode large enough for (key_len + val_len)
-// Returns offset, or 0 if no suitable node found.
-// ============================================================================
-
-static uint64_t freelist_pop(DataRegionHeader* meta,
-                              uint32_t need_key, uint32_t need_val) {
-    uint64_t prev_off = 0;
-    uint64_t cur_off  = meta->free_list_offset;
-
-    while (cur_off != 0) {
-        CXLPtr<CXLNode> node(cur_off);
-        uint32_t cap = node->key_len + node->val_len;
-        uint32_t need = need_key + need_val;
-
-        if (cap >= need) {
-            // Unlink from free list
-            if (prev_off == 0) {
-                meta->free_list_offset = node->next_offset;
-            } else {
-                CXLPtr<CXLNode>(prev_off)->next_offset = node->next_offset;
-            }
-            meta->nodes_recycled--;
-            return cur_off;
-        }
-        prev_off = cur_off;
-        cur_off  = node.read_field<uint64_t>(offsetof(CXLNode, next_offset));
-    }
-    return 0;
-}
-
-// ============================================================================
-// Free List: push a node (prepend)
-// ============================================================================
-
-static void freelist_push(DataRegionHeader* meta, uint64_t node_off) {
-    CXLPtr<CXLNode> node(node_off);
-    node->next_offset      = meta->free_list_offset;
-    meta->free_list_offset = node_off;
-    meta->nodes_recycled++;
-}
-
-// ============================================================================
-// KV PUT / UPDATE
-// ============================================================================
-
-static KVResponse kv_put(const KVRequest& req, KVPoolSlot* slot,
-                           DataRegionHeader* meta,
-                           CXLBucket* buckets, uint32_t num_buckets) {
+static KVResponse kv_put(const KVRequest& req, void* base,
+                           CXLBucket* buckets, uint32_t num_buckets,
+                           WorkerOpStats* stats) {
     KVResponse resp{};
-    resp.slot_id = req.slot_id;
-    resp.gsn     = req.gsn;
 
-    const char*  key     = slot->key;
-    uint32_t     key_len = slot->key_len;
-    const char*  val     = slot->value;
-    uint32_t     val_len = slot->val_len;
-    uint64_t     hash    = fnv1a(key, key_len);
-    uint32_t     bkt_id  = static_cast<uint32_t>(hash % num_buckets);
-    CXLBucket*   bucket  = &buckets[bkt_id];
+    const uint32_t id_new    = req.block_id;
+    UnifiedBlock*  block_new = ub(base, id_new);
 
-    // --- Search for existing key (update in-place if value fits) ---
-    uint64_t cur_off = bucket->head_offset;
-    while (cur_off != 0) {
-        CXLPtr<CXLNode> node(cur_off);
-        if (node->key_hash == hash && node->key_len == key_len) {
-            char* node_data = reinterpret_cast<char*>(node.get()) + sizeof(CXLNode);
-            if (memcmp(node_data, key, key_len) == 0) {
-                // Found — update value if it fits
-                if (val_len <= node->val_len) {
-                    memcpy(node_data + key_len, val, val_len);
-                    node->val_len = val_len;
-                    _mm_sfence();
-                    resp.status = static_cast<uint16_t>(Status::SUCCESS);
-                    return resp;
-                }
-                // Value doesn't fit — fall through to allocate new node
-                break;
-            }
+    const uint32_t key_hash = block_new->key_hash;
+    const uint16_t key_len  = block_new->key_len;
+    const char*    key      = block_new->data;
+
+    const uint32_t bkt_id = key_hash % num_buckets;
+    CXLBucket*     bucket = &buckets[bkt_id];
+
+    uint32_t prev_id = 0;
+    uint32_t cur_id  = bucket->head_block_id;
+    uint32_t id_old  = 0;
+    uint32_t depth   = 0;
+
+    while (cur_id != 0) {
+        UnifiedBlock* cur = ub(base, cur_id);
+        depth++;
+        if (cur->key_hash == key_hash && cur->key_len == key_len &&
+            memcmp(cur->data, key, key_len) == 0) {
+            id_old = cur_id;
+            break;
         }
-        cur_off = node.read_field<uint64_t>(offsetof(CXLNode, next_offset));
+        prev_id = cur_id;
+        cur_id  = static_cast<uint32_t>(cur->next_block_id);
     }
 
-    // --- Allocate new CXLNode ---
-    uint64_t node_size = sizeof(CXLNode) + key_len + val_len;
-    // Round up to cache line to keep alignment
-    node_size = (node_size + 63) & ~uint64_t(63);
-
-    uint64_t node_off = freelist_pop(meta, key_len, val_len);
-    if (node_off == 0) {
-        node_off = region_alloc(meta, node_size);
-        if (node_off == 0) {
-            resp.status = static_cast<uint16_t>(Status::ERROR);
-            return resp;
-        }
+    if (id_old != 0) {
+        block_new->next_block_id = ub(base, id_old)->next_block_id;
+        _mm_sfence();
+        if (prev_id == 0)
+            bucket->head_block_id = id_new;
+        else
+            ub(base, prev_id)->next_block_id = id_new;
+    } else {
+        block_new->next_block_id = bucket->head_block_id;
+        _mm_sfence();
+        bucket->head_block_id = id_new;
     }
 
-    // --- Initialize node ---
-    CXLPtr<CXLNode> new_node(node_off);
-    new_node->key_hash   = hash;
-    new_node->key_len    = key_len;
-    new_node->val_len    = val_len;
-    new_node->next_offset = bucket->head_offset;  // Prepend to chain
+    block_new->gsn = req.gsn;
 
-    char* node_data = reinterpret_cast<char*>(new_node.get()) + sizeof(CXLNode);
-    memcpy(node_data,           key, key_len);
-    memcpy(node_data + key_len, val, val_len);
+    if (stats) stats->record(stats->put, depth, id_old != 0);
 
-    // spec §4.3: sfence before linking to bucket (chain integrity)
-    _mm_sfence();
-    bucket->head_offset = node_off;
-
-    resp.status = static_cast<uint16_t>(Status::SUCCESS);
+    resp.status     = static_cast<uint16_t>(Status::SUCCESS);
+    resp.op_type    = req.op_type;
+    resp.block_id_a = id_old;
+    resp.block_id_b = 0;
+    resp.t0         = block_new->t0;
     return resp;
 }
 
 // ============================================================================
-// KV GET — zero-copy: return CXL offset of value bytes
+// KV GET — zero-copy
 // ============================================================================
 
-static KVResponse kv_get(const KVRequest& req, KVPoolSlot* slot,
-                           CXLBucket* buckets, uint32_t num_buckets) {
+static KVResponse kv_get(const KVRequest& req, void* base,
+                           CXLBucket* buckets, uint32_t num_buckets,
+                           WorkerOpStats* stats) {
     KVResponse resp{};
-    resp.slot_id = req.slot_id;
-    resp.gsn     = req.gsn;
 
-    const char* key     = slot->key;
-    uint32_t    key_len = slot->key_len;
-    uint64_t    hash    = fnv1a(key, key_len);
-    uint32_t    bkt_id  = static_cast<uint32_t>(hash % num_buckets);
+    const uint32_t id_req    = req.block_id;
+    UnifiedBlock*  req_block = ub(base, id_req);
 
-    // spec §4 (GET concurrency): lfence before traversal
+    const uint32_t key_hash = req_block->key_hash;
+    const uint16_t key_len  = req_block->key_len;
+    const char*    key      = req_block->data;
+
+    resp.op_type    = req.op_type;
+    resp.block_id_a = id_req;
+    resp.block_id_b = 0;
+    resp.t0         = req_block->t0;
+
     _mm_lfence();
 
-    uint64_t cur_off = buckets[bkt_id].head_offset;
-    while (cur_off != 0) {
-        CXLPtr<CXLNode> node(cur_off);
-        if (node->key_hash == hash && node->key_len == key_len) {
-            const char* node_data = reinterpret_cast<const char*>(
-                node.get()) + sizeof(CXLNode);
-            if (memcmp(node_data, key, key_len) == 0) {
-                // Found — return CXL offset of value bytes (zero-copy)
-                resp.status   = static_cast<uint16_t>(Status::SUCCESS);
-                resp.val_addr = cur_off + sizeof(CXLNode) + key_len;
-                resp.val_len  = node->val_len;
-                return resp;
-            }
+    const uint32_t bkt_id = key_hash % num_buckets;
+    uint32_t cur_id = buckets[bkt_id].head_block_id;
+    uint32_t depth  = 0;
+
+    while (cur_id != 0) {
+        UnifiedBlock* cur = ub(base, cur_id);
+        depth++;
+        if (cur->key_hash == key_hash && cur->key_len == key_len &&
+            memcmp(cur->data, key, key_len) == 0) {
+            if (stats) stats->record(stats->get, depth, true);
+            resp.status   = static_cast<uint16_t>(Status::SUCCESS);
+            resp.val_addr = reinterpret_cast<uint64_t>(cur->data + key_len);
+            resp.val_len  = cur->val_len;
+            return resp;
         }
-        cur_off = node.read_field<uint64_t>(offsetof(CXLNode, next_offset));
+        cur_id = static_cast<uint32_t>(cur->next_block_id);
     }
 
+    if (stats) stats->record(stats->get, depth, false);
     resp.status = static_cast<uint16_t>(Status::NOT_FOUND);
     return resp;
 }
@@ -216,46 +157,52 @@ static KVResponse kv_get(const KVRequest& req, KVPoolSlot* slot,
 // KV DELETE
 // ============================================================================
 
-static KVResponse kv_del(const KVRequest& req, KVPoolSlot* slot,
-                           DataRegionHeader* meta,
-                           CXLBucket* buckets, uint32_t num_buckets) {
+static KVResponse kv_del(const KVRequest& req, void* base,
+                           CXLBucket* buckets, uint32_t num_buckets,
+                           WorkerOpStats* stats) {
     KVResponse resp{};
-    resp.slot_id = req.slot_id;
-    resp.gsn     = req.gsn;
 
-    const char* key     = slot->key;
-    uint32_t    key_len = slot->key_len;
-    uint64_t    hash    = fnv1a(key, key_len);
-    uint32_t    bkt_id  = static_cast<uint32_t>(hash % num_buckets);
-    CXLBucket*  bucket  = &buckets[bkt_id];
+    const uint32_t id_cmd    = req.block_id;
+    UnifiedBlock*  cmd_block = ub(base, id_cmd);
 
-    uint64_t prev_off = 0;
-    uint64_t cur_off  = bucket->head_offset;
+    const uint32_t key_hash = cmd_block->key_hash;
+    const uint16_t key_len  = cmd_block->key_len;
+    const char*    key      = cmd_block->data;
 
-    while (cur_off != 0) {
-        CXLPtr<CXLNode> node(cur_off);
-        if (node->key_hash == hash && node->key_len == key_len) {
-            const char* node_data = reinterpret_cast<const char*>(
-                node.get()) + sizeof(CXLNode);
-            if (memcmp(node_data, key, key_len) == 0) {
-                // Unlink
-                uint64_t next = node->next_offset;
-                if (prev_off == 0) {
-                    bucket->head_offset = next;
-                } else {
-                    CXLPtr<CXLNode>(prev_off)->next_offset = next;
-                }
-                _mm_sfence();
-                // Reclaim to free list
-                freelist_push(meta, cur_off);
-                resp.status = static_cast<uint16_t>(Status::SUCCESS);
-                return resp;
-            }
+    resp.op_type    = req.op_type;
+    resp.block_id_a = id_cmd;
+    resp.block_id_b = 0;
+    resp.t0         = cmd_block->t0;
+
+    const uint32_t bkt_id = key_hash % num_buckets;
+    CXLBucket*     bucket = &buckets[bkt_id];
+
+    uint32_t prev_id = 0;
+    uint32_t cur_id  = bucket->head_block_id;
+    uint32_t depth   = 0;
+
+    while (cur_id != 0) {
+        UnifiedBlock* cur = ub(base, cur_id);
+        depth++;
+        if (cur->key_hash == key_hash && cur->key_len == key_len &&
+            memcmp(cur->data, key, key_len) == 0) {
+            uint32_t next_id = static_cast<uint32_t>(cur->next_block_id);
+            if (prev_id == 0)
+                bucket->head_block_id = next_id;
+            else
+                ub(base, prev_id)->next_block_id = next_id;
+            _mm_sfence();
+
+            if (stats) stats->record(stats->del, depth, true);
+            resp.status     = static_cast<uint16_t>(Status::SUCCESS);
+            resp.block_id_b = cur_id;
+            return resp;
         }
-        prev_off = cur_off;
-        cur_off  = node.read_field<uint64_t>(offsetof(CXLNode, next_offset));
+        prev_id = cur_id;
+        cur_id  = static_cast<uint32_t>(cur->next_block_id);
     }
 
+    if (stats) stats->record(stats->del, depth, false);
     resp.status = static_cast<uint16_t>(Status::NOT_FOUND);
     return resp;
 }
@@ -265,68 +212,61 @@ static KVResponse kv_del(const KVRequest& req, KVPoolSlot* slot,
 // ============================================================================
 
 void two_rw_worker_run(WorkerThreadState* s) {
-    const uint32_t wid   = s->worker_id;
-    const uint32_t m     = s->num_clients;  // actually num_workers, corrected below
-    // Note: resp_producers is indexed [client_id * num_workers + worker_id]
-    // We need num_workers from the layout.
-    const uint32_t n_clients = s->num_clients;
-    const uint32_t num_workers = static_cast<uint32_t>(
-        s->layout->num_workers);  // added field to layout
+    const uint32_t wid         = s->worker_id;
+    const uint32_t num_workers = s->layout->num_workers;
     const uint32_t num_buckets = s->layout->num_buckets;
 
-    CXLBucket* buckets = s->layout->bucket_table(s->cxl_base);
-    DataRegionHeader* meta = s->region_meta;
+    CXLBucket* buckets   = s->layout->bucket_table(s->cxl_base);
+    void* pool_base = static_cast<char*>(s->cxl_base) + s->layout->unifiedblockpool_off;
 
-    uint64_t ops_done    = 0;
-    uint64_t empty_polls = 0;
+    // Allocate stats on heap only when enabled; nullptr = stats off (zero overhead).
+    WorkerOpStats* stats = s->stats_enabled ? new WorkerOpStats{} : nullptr;
 
-    fprintf(stderr, "[Worker %u] Started. DataRegion: offset=0x%lx size=%zu MB\n",
-            wid, meta->base_offset, (size_t)(meta->total_size >> 20));
+    uint64_t ops_done       = 0;
+    uint64_t empty_polls    = 0;
+    uint64_t resp_fullwaits = 0;   // times enqueue to ResponseQueue failed (CXL ring full)
+    uint32_t aux;
 
     while (true) {
         KVRequest req;
         bool got = s->use_local_ring
                    ? s->local_ring_consumer->dequeue(req)
                    : s->ring_consumer->dequeue(req);
+
         if (got) {
-            req.t2 = __rdtsc();
+            req.t2 = __rdtscp(&aux);
 
-            // Resolve Pool slot via CXLPtr
-            uint64_t slot_off = s->layout->pool_slot_offset(req.slot_id);
-            KVPoolSlot* slot = CXLPtr<KVPoolSlot>(slot_off).get();
-
-            // Execute operation
             KVResponse resp;
-            auto op = static_cast<OpType>(slot->op_type);
-            switch (op) {
+            switch (static_cast<OpType>(req.op_type)) {
                 case OpType::PUT:
                 case OpType::UPDATE:
-                    resp = kv_put(req, slot, meta, buckets, num_buckets);
+                    resp = kv_put(req, pool_base, buckets, num_buckets, stats);
                     break;
                 case OpType::GET:
-                    resp = kv_get(req, slot, buckets, num_buckets);
+                    resp = kv_get(req, pool_base, buckets, num_buckets, stats);
                     break;
                 case OpType::DEL:
-                    resp = kv_del(req, slot, meta, buckets, num_buckets);
+                    resp = kv_del(req, pool_base, buckets, num_buckets, stats);
                     break;
                 default:
-                    resp.status   = static_cast<uint16_t>(Status::ERROR);
-                    resp.slot_id  = req.slot_id;
-                    resp.gsn      = req.gsn;
+                    resp = KVResponse{};
+                    resp.status     = static_cast<uint16_t>(Status::ERROR);
+                    resp.op_type    = req.op_type;
+                    resp.block_id_a = req.block_id;
+                    resp.t0         = ub(pool_base, req.block_id)->t0;
                     break;
             }
 
-            resp.t3 = __rdtsc();
-            resp.t1 = req.t1;
-            resp.t2 = req.t2;
+            resp.sn_id = s->sn_id_for_resp;
+            resp.t1    = req.t1;
+            resp.t2    = req.t2;
+            resp.t3    = __rdtscp(&aux);
 
-            // Route response to ResponseQueue[client_id][worker_id]
-            uint32_t client_id = req.client_id;
-            uint32_t resp_idx  = client_id * num_workers + wid;
-            auto& resp_prod    = s->resp_producers[resp_idx];
+            const uint32_t resp_idx = req.client_id * num_workers + wid;
+            auto& resp_prod = s->resp_producers[resp_idx];
 
-            // Busy-spin on full response queue
             while (!resp_prod.enqueue(resp)) {
+                resp_fullwaits++;
                 _mm_pause();
                 if (s->stop_flag->load(std::memory_order_relaxed)) break;
             }
@@ -334,7 +274,6 @@ void two_rw_worker_run(WorkerThreadState* s) {
             ops_done++;
         } else {
             empty_polls++;
-            // Stop when requested AND ring is empty
             if (s->stop_flag->load(std::memory_order_acquire)) {
                 bool empty;
                 if (s->use_local_ring) {
@@ -349,10 +288,12 @@ void two_rw_worker_run(WorkerThreadState* s) {
         }
     }
 
-    fprintf(stderr,
-        "[Worker %u] Done. ops=%lu  empty_polls=%lu  nodes_alloc=%lu  recycled=%lu\n",
-        wid, ops_done, empty_polls,
-        meta->nodes_allocated, meta->nodes_recycled);
+    // Store exit stats for the main thread to collect after join.
+    // No printing here — main thread prints all workers in order.
+    s->exit_ops_done       = ops_done;
+    s->exit_empty_polls    = empty_polls;
+    s->exit_resp_fullwaits = resp_fullwaits;
+    s->exit_stats          = stats;   // transfer ownership; main thread frees
 }
 
 } // namespace TwoRW

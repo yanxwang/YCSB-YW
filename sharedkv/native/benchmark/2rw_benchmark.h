@@ -35,11 +35,7 @@ struct alignas(64) ClientControl {
     std::atomic<uint64_t> responded{0};    // incremented by Response Thread on each response
     std::atomic<bool>     req_done{false}; // set by Request Thread when all ops submitted
 
-    // t0 side-table indexed by (slot_id - base_slot_id).
-    // Request Thread writes slot->t0 here; Response Thread reads before recycling.
-    uint64_t* t0_table = nullptr;          // heap: uint64_t[slots_per_client], zero-init
-
-    char _pad[24];
+    char _pad[32];
 };
 static_assert(sizeof(ClientControl) % 64 == 0);
 
@@ -58,6 +54,13 @@ struct ReqThreadArgs {
     volatile bool*                    should_stop;
     pthread_barrier_t*                barrier;
     ClientControl*                    ctrl;
+
+    // Output (filled at thread exit, read by main after join)
+    uint64_t                          out_submitted = 0;
+    uint64_t                          out_req_enq_waits = 0;  // times two_rw_submit() returned
+                                                              // false (RequestQueue full), causing
+                                                              // spin-wait.  Non-zero means RT is
+                                                              // producing faster than SN can drain.
 };
 
 struct RespThreadArgs {
@@ -65,6 +68,7 @@ struct RespThreadArgs {
     uint32_t              client_id;
     int                   cpu_id;          // dedicated core: cpu_start + n + client_id
     bool                  measure_latency;
+    bool                  verbose = false; // gate UINTR setup messages
     volatile bool*        should_stop;
     pthread_barrier_t*    barrier;
     ClientControl*        ctrl;
@@ -72,6 +76,13 @@ struct RespThreadArgs {
     // Outputs (filled when thread exits)
     uint64_t              out_completed;
     uint64_t              out_failed;
+    // Response path diagnostics:
+    uint64_t              out_drain_rounds   = 0;  // completed scan rounds through all m ResponseQueues
+    uint64_t              out_uintr_wakeups  = 0;  // times woken from uintr_wait() by Poller IPI
+    uint64_t              out_empty_rounds   = 0;  // scan rounds where zero responses were dequeued
+                                                   // (triggers uintr_wait sleep; high = Poller slow)
+    uint64_t              out_recycle_waits  = 0;  // times FreeBlockQueue.push() failed (RT hasn't
+                                                   // drained; causes RespThread to spin-wait)
     // Decomposed latency (only populated when measure_latency=true):
     std::vector<uint64_t> out_stage0_ticks;  // t1 - t0: pool-fill → RequestQueue
     std::vector<uint64_t> out_stage1_ticks;  // t2 - t1: Sync dispatch latency

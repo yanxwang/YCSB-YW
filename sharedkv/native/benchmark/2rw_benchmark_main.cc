@@ -56,6 +56,9 @@ static void print_usage(const char* prog) {
         "  --mem-gb            N    CXL memory size in GB          (default: 16)\n"
         "  --worker-cpu        N    First CPU for Worker threads   (default: 1+s)\n"
         "  --local-workerring       WorkerRing on local DRAM instead of CXL\n"
+        "  --stats                  Per-op chain traversal stats + bucket distribution\n"
+        "  --counters               Pipeline-wide enqueue/dequeue counters per role\n"
+        "  --verbose                Per-thread lifecycle messages + client summary\n"
         "\n"
         "Benchmark:\n"
         "  --numa <numa>           NUMA node for CXL memory       (default: 2)\n"
@@ -124,9 +127,9 @@ int main(int argc, char** argv) {
     cfg.num_clients      = 4;
     cfg.num_workers      = 8;
     cfg.slots_per_client = 1024;
-    cfg.num_buckets      = 1 << 20;   // 1M buckets
+    cfg.num_buckets      = 8 << 20;   // 1M buckets
     cfg.queue_depth      = 1024;
-    cfg.memory_size      = 16ULL << 30;
+    cfg.memory_size      = 64ULL << 30;
     cfg.num_synchronizers = 1;
     cfg.worker_cpu_start = -1;        // -1 = auto: 1 + num_synchronizers
 
@@ -173,6 +176,12 @@ int main(int argc, char** argv) {
             cfg.worker_cpu_start = next_int("--worker-cpu");
         } else if (strcmp(argv[i], "--local-workerring") == 0) {
             cfg.local_workerring = true;
+        } else if (strcmp(argv[i], "--stats") == 0) {
+            cfg.stats_enabled = true;
+        } else if (strcmp(argv[i], "--counters") == 0) {
+            cfg.counters_enabled = true;
+        } else if (strcmp(argv[i], "--verbose") == 0) {
+            cfg.verbose = true;
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             print_usage(argv[0]);
             return 0;
@@ -240,6 +249,12 @@ int main(int argc, char** argv) {
            cpu_start + static_cast<int>(2 * n) - 1);
     printf("  local_workerring:      %s\n",
            cfg.local_workerring ? "yes (DRAM)" : "no (CXL)");
+    printf("  stats:                 %s\n",
+           cfg.stats_enabled ? "enabled" : "disabled");
+    printf("  counters:              %s\n",
+           cfg.counters_enabled ? "enabled" : "disabled");
+    printf("  verbose:               %s\n",
+           cfg.verbose ? "enabled" : "disabled");
     if (measure_latency) {
         printf("  Mode:         Latency  (%u ops/client, %u total)\n",
                ops_per_client, ops_per_client * n);
@@ -252,7 +267,7 @@ int main(int argc, char** argv) {
     WorkloadFileNames wf = get_workload_files(workload_name);
     std::vector<YCSBOperation> load_ops, trans_ops;
 
-    printf("[Main] Loading workload files...\n");
+    if (cfg.verbose) printf("[Main] Loading workload files...\n");
     if (load_ycsb_workload(wf.load_file.c_str(), load_ops) != 0) {
         fprintf(stderr, "ERROR: Cannot load %s\n", wf.load_file.c_str());
         return 1;
@@ -261,23 +276,23 @@ int main(int argc, char** argv) {
         fprintf(stderr, "ERROR: Cannot load %s\n", wf.trans_file.c_str());
         return 1;
     }
-    printf("[Main] load_ops=%zu  trans_ops=%zu\n\n",
-           load_ops.size(), trans_ops.size());
+    if (cfg.verbose)
+        printf("[Main] load_ops=%zu  trans_ops=%zu\n\n",
+               load_ops.size(), trans_ops.size());
 
     // ---- Estimate TSC Frequency ----
-    printf("[Main] Estimating TSC frequency...\n");
     uint64_t tsc_mhz = estimate_tsc_mhz();
-    printf("[Main] TSC ~ %lu MHz\n\n", tsc_mhz);
+    printf("  TSC frequency: ~%lu MHz\n\n", tsc_mhz);
 
     // ---- Init 2RW Context ----
-    printf("[Main] Initializing 2RW context...\n");
+    if (cfg.verbose) printf("[Main] Initializing 2RW context...\n");
     TwoRWContext* ctx = two_rw_init(cfg);
     if (!ctx) {
         fprintf(stderr, "ERROR: two_rw_init failed\n");
         return 1;
     }
 
-    printf("[Main] Starting core threads (Sync, Poller, Workers)...\n");
+    if (cfg.verbose) printf("[Main] Starting core threads (Sync, Poller, Workers)...\n");
     two_rw_start_threads(ctx);
     printf("\n");
 
@@ -295,6 +310,11 @@ int main(int argc, char** argv) {
             ops_per_c, /*measure_latency=*/false);
 
         print_phase_result("LOAD PHASE", lr, tsc_mhz, false);
+    }
+
+    // After LOAD: scan bucket table (main thread, workers idle between phases)
+    if (cfg.stats_enabled) {
+        two_rw_print_bucket_stats(ctx);
     }
 
     if (g_should_stop) {
@@ -316,9 +336,11 @@ int main(int argc, char** argv) {
     }
 
 cleanup:
-    printf("[Main] Stopping core threads...\n");
     two_rw_stop(ctx);
+    // Print worker exit stats in order 0..m-1 after all workers are joined.
+    // --verbose:  ops/empty_polls per worker
+    // --stats:    GET/PUT/DEL chain-depth breakdown per worker
+    two_rw_print_worker_stats(ctx);
     two_rw_destroy(ctx);
-    printf("[Main] Done.\n");
     return 0;
 }

@@ -7,8 +7,6 @@
 #include "uintr_threading.h"
 
 #include <sys/mman.h>
-#include <sys/stat.h>
-#include <fcntl.h>
 #include <unistd.h>
 #include <cstring>
 #include <cstdio>
@@ -31,27 +29,44 @@ namespace TwoRW {
 // ============================================================================
 
 static void* allocate_cxl_slab(int numa_node, uint64_t size) {
-    char shm_name[64];
-    snprintf(shm_name, sizeof(shm_name), "/sharedkv_2rw_node%d", numa_node);
-
-    int fd = shm_open(shm_name, O_CREAT | O_RDWR, 0666);
-    if (fd < 0) {
-        perror("shm_open");
-        return nullptr;
+    // ── NUMA capacity check ───────────────────────────────────────────────────
+    // mbind(MPOL_BIND) strictly requires all pages to come from numa_node.
+    // If the node's physical capacity is smaller than `size`, every page fault
+    // beyond its capacity raises SIGBUS (Bus Error) during memset.
+    // Check total node memory before committing to the allocation.
+    if (numa_node >= 0 && numa_available() >= 0) {
+        long long free_mem  = 0;
+        long long total_mem = numa_node_size64(numa_node, &free_mem);
+        if (total_mem < 0) {
+            fprintf(stderr, "[2RW] WARNING: Cannot query NUMA node %d memory size\n",
+                    numa_node);
+        } else {
+            fprintf(stderr,
+                "[2RW] NUMA node %d: total=%lld MB, free=%lld MB, requested=%llu MB\n",
+                numa_node, total_mem >> 20, free_mem >> 20,
+                (unsigned long long)size >> 20);
+            if ((unsigned long long)size > (unsigned long long)total_mem) {
+                fprintf(stderr,
+                    "[2RW] ERROR: requested %llu MB exceeds NUMA node %d physical "
+                    "capacity (%lld MB).\n"
+                    "       Reduce --mem-gb to %lld or less.\n",
+                    (unsigned long long)size >> 20, numa_node,
+                    total_mem >> 20, total_mem >> 20);
+                return nullptr;
+            }
+        }
     }
 
-    if (ftruncate(fd, static_cast<off_t>(size)) < 0) {
-        perror("ftruncate");
-        close(fd);
-        return nullptr;
-    }
-
+    // Use MAP_ANONYMOUS | MAP_PRIVATE so that physical pages come directly
+    // from the CXL NUMA node (via mbind) without going through /dev/shm tmpfs.
+    // shm_open + MAP_SHARED was subject to the /dev/shm tmpfs mount-size limit
+    // (typically ~half of DRAM, far smaller than CXL capacity), which caused
+    // Bus Errors on large allocations that exceed that limit.
     void* ptr = mmap(nullptr, size, PROT_READ | PROT_WRITE,
-                     MAP_SHARED, fd, 0);
-    close(fd);
+                     MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
 
     if (ptr == MAP_FAILED) {
-        perror("mmap");
+        perror("mmap(MAP_ANONYMOUS)");
         return nullptr;
     }
 
@@ -82,25 +97,8 @@ static void init_cxl_memory(void* base, const TwoRWLayout& L,
     hdr->queue_depth      = cfg.queue_depth;
     hdr->total_size       = L.total_size;
 
-    // Init DataRegion metadata
-    for (uint32_t i = 0; i < cfg.num_workers; i++) {
-        DataRegionHeader* meta = L.data_region_meta(base, i);
-        meta->base_offset      = L.data_region_offset(i);
-        meta->total_size       = L.data_region_per_worker;
-        meta->alloc_offset     = sizeof(DataRegionHeader);
-        meta->free_list_offset = 0;
-        meta->nodes_allocated  = 0;
-        meta->nodes_recycled   = 0;
-    }
-
-    // Init Pool slots (magic = POOL_MAGIC, rest zeroed)
-    for (uint32_t j = 0; j < cfg.num_clients; j++) {
-        for (uint32_t k = 0; k < cfg.slots_per_client; k++) {
-            uint32_t slot_id = L.global_slot_id(j, k);
-            KVPoolSlot* s = CXLPtr<KVPoolSlot>(L.pool_slot_offset(slot_id)).get();
-            s->magic = POOL_MAGIC;
-        }
-    }
+    // Mark GlobalIDMap block 0 as reserved (sentinel; never allocated)
+    L.globalidmap(base)[0] |= 0x01;
 
     // Init RequestQueues: n_clients * n_synchronizers queues
     const uint32_t s = cfg.num_synchronizers;
@@ -210,11 +208,31 @@ TwoRWContext* two_rw_init(const TwoRWConfig& cfg) {
 
     // ---- Allocate local (non-CXL) structures ----
 
-    // FreeIDQueues — one per client, pre-filled with slot_ids
-    ctx->free_id_queues = new FreeIDQueue<QUEUE_CAP>[n];
+    // FreeBlockQueues — one per client (no pre-fill; LocalBlockCache handles init stock)
+    ctx->free_block_queues = new FreeBlockQueue<QUEUE_CAP>[n];
     for (uint32_t j = 0; j < n; j++) {
-        ctx->free_id_queues[j].init(j, cfg.slots_per_client);
+        ctx->free_block_queues[j].init();
     }
+
+    // LocalBlockCaches — pre-fill client j with block IDs [j*K+1 .. (j+1)*K]
+    // (block 0 is reserved sentinel, never allocated)
+    ctx->local_block_caches = new LocalBlockCache[n];
+    for (uint32_t j = 0; j < n; j++) {
+        auto& cache = ctx->local_block_caches[j];
+        const uint32_t base_id = j * cfg.slots_per_client + 1;
+        uint32_t k = 0;
+        // Fill local stack (capacity 1024)
+        for (; k < cfg.slots_per_client && cache.top < 1024; k++)
+            cache.stack[cache.top++] = base_id + k;
+        // Overflow: push remaining into FreeBlockQueue
+        for (; k < cfg.slots_per_client; k++)
+            ctx->free_block_queues[j].push(base_id + k);
+    }
+
+    // Global bump allocator starts after the pre-filled range.
+    // Handles new-key INSERT where block stays in hash table (not recycled).
+    ctx->block_alloc_next.store(n * cfg.slots_per_client + 1,
+                                std::memory_order_relaxed);
 
     // ---- Request thread producers: [n * s] ----
     // Written by Request Threads (not SNs) → regular new[], no NUMA needed
@@ -379,13 +397,14 @@ TwoRWContext* two_rw_init(const TwoRWConfig& cfg) {
         ws.layout                = &ctx->layout;
         ws.cxl_base              = ctx->cxl_base;
         ws.stop_flag             = &ctx->stop_flag;
-        ws.region_meta           = ctx->layout.data_region_meta(ctx->cxl_base, i);
+        ws.sn_id_for_resp        = static_cast<uint8_t>(i / wps);
         ws.ring_consumer         = &ctx->ring_consumers[i];
         ws.local_ring_consumer   = cfg.local_workerring
                                    ? &ctx->local_ring_consumers[i] : nullptr;
         ws.use_local_ring        = cfg.local_workerring;
         ws.resp_producers        = ctx->resp_producers;
         ws.num_clients           = n;
+        ws.stats_enabled         = cfg.stats_enabled;
     }
 
     // ---- PollerThreadState ----
@@ -470,11 +489,13 @@ void two_rw_stop(TwoRWContext* ctx) {
     if (ctx->poller_thread.joinable())
         ctx->poller_thread.join();
 
-    // Print final GSN per SN
-    for (uint32_t k = 0; k < s; k++) {
-        if (ctx->sync_state_ptrs && ctx->sync_state_ptrs[k]) {
-            fprintf(stderr, "[2RW] SN%u final GSN: %lu\n",
-                    k, ctx->sync_state_ptrs[k]->gsn.load());
+    // Print final GSN per SN (--verbose only)
+    if (ctx->config.verbose) {
+        for (uint32_t k = 0; k < s; k++) {
+            if (ctx->sync_state_ptrs && ctx->sync_state_ptrs[k]) {
+                fprintf(stderr, "[2RW] SN%u final GSN: %lu\n",
+                        k, ctx->sync_state_ptrs[k]->gsn.load());
+            }
         }
     }
 }
@@ -493,7 +514,8 @@ void two_rw_destroy(TwoRWContext* ctx) {
     const bool numa_ok = (numa_available() >= 0);
 
     // Non-SN allocations → always regular delete[]
-    delete[] ctx->free_id_queues;
+    delete[] ctx->free_block_queues;
+    delete[] ctx->local_block_caches;
     delete[] ctx->req_producers;
     delete[] ctx->ring_consumers;
     delete[] ctx->resp_producers;
@@ -572,24 +594,181 @@ void two_rw_destroy(TwoRWContext* ctx) {
 
 void TwoRWLayout::print() const {
     fprintf(stderr,
-        "  header          @ 0x%010lx\n"
-        "  hash_table      @ 0x%010lx  (%u buckets)\n"
-        "  data_region_meta@ 0x%010lx  (%u workers)\n"
-        "  pool            @ 0x%010lx  (%u clients × %u slots × 2048B = %zu MB)\n"
-        "  request_queues  @ 0x%010lx  (%u clients × %u SNs = %u queues)\n"
-        "  worker_rings    @ 0x%010lx  (%u rings)\n"
-        "  response_queues @ 0x%010lx  (%u × %u = %u queues)\n"
-        "  data_region     @ 0x%010lx  (%zu MB per worker)\n",
+        "  header            @ 0x%010lx  (64B)\n"
+        "  hash_table        @ 0x%010lx  (%u buckets × 8B = %zu KB)\n"
+        "  request_queues    @ 0x%010lx  (%u clients × %u SNs = %u queues)\n"
+        "  worker_rings      @ 0x%010lx  (%u rings)\n"
+        "  response_queues   @ 0x%010lx  (%u × %u = %u queues)\n"
+        "  globalidmap       @ 0x%010lx  (%u blocks → %zu B bitmap)\n"
+        "  unifiedblockpool  @ 0x%010lx  (%u blocks × 2048B = %zu MB)\n"
+        "  spillover         @ 0x%010lx  (%u clients × %zu KB = %zu KB)\n",
         header_off,
         hash_table_off, num_buckets,
-        data_region_meta_off, num_workers,
-        pool_off, num_clients, slots_per_client,
-        (size_t)((uint64_t)num_clients * slots_per_client * 2048 >> 20),
+        (size_t)((uint64_t)num_buckets * 8 >> 10),
         request_queue_off, num_clients, num_synchronizers,
         num_clients * num_synchronizers,
         worker_ring_off, num_workers,
         response_queue_off, num_clients, num_workers, num_clients * num_workers,
-        data_region_off, (size_t)(data_region_per_worker >> 20));
+        globalidmap_off, total_blocks,
+        (size_t)((total_blocks + 7) / 8),
+        unifiedblockpool_off, total_blocks,
+        (size_t)((uint64_t)total_blocks * 2048 >> 20),
+        spillover_off, num_clients,
+        (size_t)(spillover_per_client >> 10),
+        (size_t)((uint64_t)num_clients * spillover_per_client >> 10));
+}
+
+// ============================================================================
+// two_rw_print_worker_stats
+//
+// Called by the main thread after two_rw_stop() (all workers joined).
+// Prints per-worker exit stats in order 0..m-1 — no interleaving possible.
+//
+//   --verbose:  ops=X  empty_polls=Y per worker
+//   --stats:    GET/PUT/DEL chain-depth breakdown per worker
+//
+// Also frees the WorkerOpStats heap objects transferred from worker threads.
+// ============================================================================
+
+void two_rw_print_worker_stats(TwoRWContext* ctx) {
+    const uint32_t m       = ctx->config.num_workers;
+    const bool verbose     = ctx->config.verbose;
+    const bool stats       = ctx->config.stats_enabled;
+    const bool counters    = ctx->config.counters_enabled;
+
+    if (!verbose && !stats && !counters) return;
+
+    printf("\n===== Worker Summary (0..%u) =====\n", m - 1);
+
+    // ── Worker counters (--counters) ──
+    if (counters) {
+        printf("--- Workers (dequeue ← WorkerRing, enqueue → ResponseQueue) ---\n");
+        printf("  %-8s  %12s  %12s  %12s\n",
+               "Worker", "ops_done", "empty_polls", "resp_fullwaits");
+        for (uint32_t i = 0; i < m; i++) {
+            WorkerThreadState& ws = ctx->worker_states[i];
+            printf("  W-%-6u  %12lu  %12lu  %12lu\n",
+                   i, ws.exit_ops_done, ws.exit_empty_polls, ws.exit_resp_fullwaits);
+        }
+        printf("\n");
+    }
+
+    for (uint32_t i = 0; i < m; i++) {
+        WorkerThreadState& ws = ctx->worker_states[i];
+
+        if (verbose && !counters) {
+            printf("  Worker %-3u  ops=%-12lu  empty_polls=%-12lu  resp_fullwaits=%lu\n",
+                   i, ws.exit_ops_done, ws.exit_empty_polls, ws.exit_resp_fullwaits);
+        }
+
+        if (stats && ws.exit_stats) {
+            WorkerOpStats& st = *ws.exit_stats;
+
+            // Print header only when verbose/counters didn't already print worker line
+            if (!verbose && !counters) printf("  Worker %u:\n", i);
+
+            auto print_op = [](const char* name,
+                                const WorkerOpStats::PerOp& op) {
+                if (op.total == 0) return;
+                double avg = (double)op.chain_sum / (double)op.total;
+                printf("    %-10s  total=%8lu  hit=%8lu  miss=%8lu"
+                       "  chain_avg=%5.2f\n",
+                       name, op.total, op.hit, op.miss, avg);
+                // Print non-zero histogram buckets
+                bool hdr = false;
+                for (int d = 0; d <= 16; d++) {
+                    if (op.hist[d] == 0) continue;
+                    if (!hdr) { printf("               depth:"); hdr = true; }
+                    if (d < 16) printf("  [%2d]=%lu", d, op.hist[d]);
+                    else        printf("  [16+]=%lu", op.hist[d]);
+                }
+                if (hdr) printf("\n");
+            };
+
+            print_op("GET",        st.get);
+            print_op("PUT/UPDATE", st.put);
+            print_op("DEL",        st.del);
+
+            delete ws.exit_stats;
+            ws.exit_stats = nullptr;
+        }
+    }
+
+    // ── Poller counters (--counters) ──
+    if (counters && ctx->poller_state) {
+        printf("--- Poller (scan ResponseQueues, send UINTR) ---\n");
+        printf("  scan_rounds:  %lu\n", ctx->poller_state->exit_scan_rounds);
+        printf("  uintrs_sent:  %lu\n", ctx->poller_state->exit_uintrs_sent);
+        if (ctx->poller_state->exit_uintrs_sent > 0)
+            printf("  rounds/uintr: %.1f\n",
+                   (double)ctx->poller_state->exit_scan_rounds /
+                   ctx->poller_state->exit_uintrs_sent);
+        printf("\n");
+    }
+
+    printf("==================================\n\n");
+}
+
+// ============================================================================
+// two_rw_print_bucket_stats
+//
+// Scans the entire hash table bucket array, computes chain-length histogram,
+// and prints a distribution report.  Call from the main thread after the
+// LOAD phase (Workers idle) when --stats is enabled.
+//
+// CXL reads: one per chain node (random-access pattern — same as GET).
+// ============================================================================
+
+void two_rw_print_bucket_stats(TwoRWContext* ctx) {
+    const uint32_t num_buckets = ctx->layout.num_buckets;
+    CXLBucket* buckets  = ctx->layout.bucket_table(ctx->cxl_base);
+    void*      pool_base = static_cast<char*>(ctx->cxl_base)
+                           + ctx->layout.unifiedblockpool_off;
+
+    // hist[d] = # buckets with chain length exactly d (d=0..15, d=16 means 16+)
+    uint64_t hist[17]    = {};
+    uint64_t total_nodes = 0;
+    uint64_t non_empty   = 0;
+    uint64_t max_chain   = 0;
+
+    for (uint32_t b = 0; b < num_buckets; b++) {
+        uint32_t cur   = buckets[b].head_block_id;
+        uint32_t depth = 0;
+        while (cur != 0) {
+            depth++;
+            UnifiedBlock* blk = reinterpret_cast<UnifiedBlock*>(
+                static_cast<char*>(pool_base) + static_cast<uint64_t>(cur) * 2048ULL);
+            cur = static_cast<uint32_t>(blk->next_block_id);
+        }
+        hist[(depth < 16) ? depth : 16]++;
+        total_nodes += depth;
+        if (depth > 0) non_empty++;
+        if (depth > max_chain) max_chain = depth;
+    }
+
+    printf("\n=== Hash Table Bucket Chain Length Distribution ===\n");
+    printf("  Total buckets : %u\n",    num_buckets);
+    printf("  Non-empty     : %lu  (%.1f%%)\n",
+           non_empty, 100.0 * non_empty / num_buckets);
+    printf("  Total nodes   : %lu\n",   total_nodes);
+    printf("  Max chain     : %lu\n",   max_chain);
+    printf("  Avg chain len (all buckets)       : %.4f\n",
+           (double)total_nodes / num_buckets);
+    if (non_empty > 0)
+        printf("  Avg chain len (non-empty buckets) : %.4f\n",
+               (double)total_nodes / non_empty);
+
+    printf("\n  %-8s  %10s  %6s\n", "Depth", "# Buckets", "%");
+    for (int d = 0; d <= 16; d++) {
+        if (hist[d] == 0) continue;
+        if (d < 16)
+            printf("  %-8d  %10lu  %5.2f%%\n",
+                   d, hist[d], 100.0 * hist[d] / num_buckets);
+        else
+            printf("  %-8s  %10lu  %5.2f%%\n",
+                   "16+", hist[d], 100.0 * hist[d] / num_buckets);
+    }
+    printf("===================================================\n\n");
 }
 
 } // namespace TwoRW

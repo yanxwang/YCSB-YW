@@ -32,6 +32,9 @@ void two_rw_poller_run(PollerThreadState* s) {
         states[j] = {true, -1, -1};
     }
 
+    uint64_t scan_rounds = 0;
+    uint64_t uintrs_sent = 0;
+
     fprintf(stderr, "[Poller] Started. Monitoring %u × %u ResponseQueues\n", n, m);
 
     while (!s->stop_flag->load(std::memory_order_relaxed)) {
@@ -67,9 +70,11 @@ void two_rw_poller_run(PollerThreadState* s) {
             // Edge: empty → non-empty → send UINTR
             if (st.was_any_empty && any_nonempty && st.uipi_index >= 0) {
                 _senduipi(static_cast<unsigned long long>(st.uipi_index));
+                uintrs_sent++;
             }
             st.was_any_empty = !any_nonempty;
         }
+        scan_rounds++;
         std::this_thread::yield();
     }
 
@@ -80,7 +85,11 @@ void two_rw_poller_run(PollerThreadState* s) {
         }
     }
 
-    fprintf(stderr, "[Poller] Stopped.\n");
+    s->exit_scan_rounds = scan_rounds;
+    s->exit_uintrs_sent = uintrs_sent;
+
+    fprintf(stderr, "[Poller] Stopped. scan_rounds=%lu  uintrs_sent=%lu\n",
+            scan_rounds, uintrs_sent);
 }
 
 } // namespace TwoRW
