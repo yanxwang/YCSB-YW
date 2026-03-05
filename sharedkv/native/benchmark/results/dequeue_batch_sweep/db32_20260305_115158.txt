@@ -1,0 +1,138 @@
+[2RW Config]
+  numa_node            = 2
+  num_clients (n)      = 8
+  num_workers (m)      = 10
+  num_synchronizers(s) = 1  (workers per SN: 10)
+  slots_per_client     = 1024  (blocks pre-alloc per client)
+  num_buckets          = 8388608
+  queue_depth          = 1024
+  memory_size          = 65536 MB
+  worker_cpu_start     = 3  (workers on CPU 3..12)
+  local_workerring     = yes (DRAM)
+[2RW] NUMA topology: CPU0_node=0  CXL_node=2  OK (CPU0 local DRAM != CXL node)
+[2RW] NUMA node 2: total=262144 MB, free=262063 MB, requested=65536 MB
+[2RW] CXL memory initialized. Layout:
+  header            @ 0x0000000000  (64B)
+  hash_table        @ 0x0000000040  (8388608 buckets × 8B = 65536 KB)
+  request_queues    @ 0x0004000040  (8 clients × 1 SNs = 8 queues)
+  worker_rings      @ 0x0004200640  (10 rings)
+  response_queues   @ 0x0004480dc0  (8 × 10 = 80 queues)
+  globalidmap       @ 0x00058849c0  (26807288 blocks → 3350911 B bitmap)
+  unifiedblockpool  @ 0x0005bb7000  (26807288 blocks × 2048B = 52357 MB)
+  spillover         @ 0x0cce1b3000  (8 clients × 1675046 KB = 13400372 KB)
+[2RW] sn_req_consumers[0]=0x7f1bc110c000  NUMA node 0  (expected 0)  OK
+[2RW] sn_ring_producers[0]=0x7f1bc110b000  NUMA node 0  (expected 0)  OK
+[2RW] local_workerring: allocated 10 DRAM rings (256 KB each)
+[2RW] sync_state[0].gsn=0x7f1bc110a080  NUMA node 0  (expected 0)  OK
+[Poller] Started. Monitoring 8 × 10 ResponseQueues
+[2RW] Threads started: Poller=CPU0, SN[0..0]=CPU[1..1], Workers=CPU[3..12]
+[SN0] GSN Microbenchmark (isolated, 500000 iters, rdtscp): 18.12 ticks/fetch_add(1)
+[SN0] sync_state->gsn address: 0x7f1bc110a080
+[SN0] Started. Polling 8 RequestQueues → 10 WorkerRings (workers 0..9)
+[SN0]   Mode: dequeue_batch_pipelined (DEQUEUE_BATCH=32  READ_ACK_BATCH=32)
+[SN0]   Timing: rdtscp. A=pipelined_batch_deq/op  C=enq/op  F=flush/op
+[SN0] ops=1600000  wall=432.7  A(deq/op)=273.9  C(enq/op)=103.5  F(flush/op)=1.0  fw=0  empty=0
+[SN0] ops=2800000  wall=437.4  A(deq/op)=275.5  C(enq/op)=103.9  F(flush/op)=1.0  fw=0  empty=0
+[SN0] ops=3800000  wall=437.6  A(deq/op)=276.0  C(enq/op)=104.1  F(flush/op)=1.0  fw=0  empty=0
+[SN0] ops=5200000  wall=437.3  A(deq/op)=276.4  C(enq/op)=104.2  F(flush/op)=1.0  fw=0  empty=0
+[SN0] ops=6200000  wall=437.6  A(deq/op)=276.6  C(enq/op)=104.3  F(flush/op)=1.0  fw=0  empty=0
+[SN0] ops=7800000  wall=440.0  A(deq/op)=277.3  C(enq/op)=104.2  F(flush/op)=1.0  fw=0  empty=19
+[SN0] ops=10000000  wall=503.5  A(deq/op)=282.3  C(enq/op)=104.1  F(flush/op)=1.0  fw=0  empty=202
+[SN0] ops=17800000  wall=250.6  A(deq/op)=200.0  C(enq/op)=104.3  F(flush/op)=0.9  fw=0  empty=454
+[SN0] ops=18600000  wall=265.6  A(deq/op)=196.1  C(enq/op)=104.4  F(flush/op)=0.9  fw=0  empty=454
+[SN0] ops=20000000  wall=359.2  A(deq/op)=193.3  C(enq/op)=104.4  F(flush/op)=0.9  fw=0  empty=472
+[Poller] Stopped. scan_rounds=13500299  uintrs_sent=16
+[SN0] ===== Final Statistics =====
+[SN0]   total_routed  : 20000000
+[SN0]   empty_polls   : 1021153
+[SN0]   ring_fullwaits: 0
+[SN0]   flush calls   : 500434  (batch=32, raw/flush=36.3 ticks)
+[SN0]   wall ticks/op : 663.6
+[SN0]
+[SN0]   Sub-operation breakdown (rdtscp-serialized, avg ticks/op):
+[SN0]     A  pipelined batch deq/op  :  193.3  (DEQUEUE_BATCH=32)
+[SN0]     C  ring enqueue/op         :  104.4  (DRAM release-store)
+[SN0]     F  flush amortised/op      :    0.9  (READ_ACK_BATCH=32)
+[SN0]     loop+rdtscp overhead/op    :  365.0
+[SN0]   Per RequestQueue:
+[SN0]     ReqQ[0]: 2500000
+[SN0]     ReqQ[1]: 2500000
+[SN0]     ReqQ[2]: 2500000
+[SN0]     ReqQ[3]: 2500000
+[SN0]     ReqQ[4]: 2500000
+[SN0]     ReqQ[5]: 2500000
+[SN0]     ReqQ[6]: 2500000
+[SN0]     ReqQ[7]: 2500000
+[SN0]   Per WorkerRing (global IDs):
+[SN0]     Worker[0]: enqueued=2022620  fullwaits=0
+[SN0]     Worker[1]: enqueued=2029244  fullwaits=0
+[SN0]     Worker[2]: enqueued=1996213  fullwaits=0
+[SN0]     Worker[3]: enqueued=1999883  fullwaits=0
+[SN0]     Worker[4]: enqueued=1979039  fullwaits=0
+[SN0]     Worker[5]: enqueued=1976848  fullwaits=0
+[SN0]     Worker[6]: enqueued=2054058  fullwaits=0
+[SN0]     Worker[7]: enqueued=2053739  fullwaits=0
+[SN0]     Worker[8]: enqueued=1943192  fullwaits=0
+[SN0]     Worker[9]: enqueued=1945164  fullwaits=0
+==============================================
+SharedKV 2RW YCSB Benchmark
+==============================================
+  Workload:              workloada
+  NUMA node:             2
+  num_clients (n):       8
+  num_workers (m):       10
+  num_synchronizers (s): 1  (workers per SN: 10)
+  slots_per_client:      1024
+  num_buckets:           8388608
+  queue_depth:           1024
+  memory_size:           64 GB
+  CPU layout:
+    Poller:     CPU 0
+    SN0:        CPU 1
+    Workers:    CPU 3..12
+    ReqTh:      CPU 16..23
+    RespTh:     CPU 24..31
+  dequeue_batch:         32
+  read_ack_batch:        32
+  local_workerring:      yes (DRAM)
+  stats:                 disabled
+  counters:              disabled
+  verbose:               disabled
+  Mode:         Latency  (1250000 ops/client, 10000000 total)
+==============================================
+
+[Benchmark] Loaded 10000000 operations from workloads/workloada_load.txt
+[Benchmark] Loaded 10000000 operations from workloads/workloada_trans.txt
+  TSC frequency: ~2100 MHz
+
+
+[Main] ===== LOAD PHASE =====
+
+==============================================
+LOAD PHASE Results:
+==============================================
+  Total ops:    10000000
+  Successful:   10000000
+  Failed:       0
+  Duration:     2.155 s
+  Throughput:   4641409 ops/s
+==============================================
+
+[Main] ===== TRANSACTION PHASE =====
+
+==============================================
+TRANSACTION PHASE Results:
+==============================================
+  Total ops:    10000000
+  Successful:   10000000
+  Failed:       0
+  Duration:     1.271 s
+  Throughput:   7866979 ops/s
+  Decomposed Latency (10000000 samples, TSC ~2100 MHz):
+  Stage                          avg(us)       p50       p99       max
+  t0→t1 pool→RequestQueue       0.01      0.01      0.01     20.05
+  t1→t2 Sync dispatch            30.51     20.78     93.22   2087.08
+  t2→t3 Worker execution          0.48      0.51      1.08     29.64
+  t0→t3 end-to-end               31.00     21.24     93.76   2087.61
+==============================================
+

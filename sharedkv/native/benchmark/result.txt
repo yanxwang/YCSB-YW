@@ -662,3 +662,31 @@ TRANSACTION PHASE Results:
   rounds/uintr: 884025.9
 
 ==================================
+
+
+
+wang@emr:/tmp$ sudo ./Linux/mlc --latency_matrix
+Intel(R) Memory Latency Checker - v3.12
+Command line parameters: --latency_matrix 
+
+Using buffer size of 200.000MiB
+Measuring idle latencies for sequential access (in ns)...
+                Numa node
+Numa node            0       1       2
+       0         149.9   238.4   211.4
+       1         233.4   152.3   403.7
+
+
+
+
+root@pxe:/tmp/Linux# sudo ./mlc --latency_matrix
+sudo: unable to resolve host pxe: Name or service not known
+Intel(R) Memory Latency Checker - v3.12
+Detected Birch Stream platform, latency optimized mode may need to be turned on to get the best latencies.
+Command line parameters: --latency_matrix
+
+Using buffer size of 200.000MiB
+Measuring idle latencies for sequential access (in ns)...
+                Numa node
+Numa node            0       1
+       0         174.8   607.8

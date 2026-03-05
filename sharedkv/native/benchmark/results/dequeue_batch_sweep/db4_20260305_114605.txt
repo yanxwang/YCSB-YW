@@ -1,0 +1,162 @@
+[2RW Config]
+  numa_node            = 2
+  num_clients (n)      = 4
+  num_workers (m)      = 8
+  num_synchronizers(s) = 1  (workers per SN: 8)
+  slots_per_client     = 1024  (blocks pre-alloc per client)
+  num_buckets          = 8388608
+  queue_depth          = 1024
+  memory_size          = 65536 MB
+  worker_cpu_start     = -1  (workers on CPU 2..9)
+  local_workerring     = no (CXL)
+[2RW] NUMA topology: CPU0_node=0  CXL_node=2  OK (CPU0 local DRAM != CXL node)
+[2RW] NUMA node 2: total=262144 MB, free=262068 MB, requested=65536 MB
+[2RW] CXL memory initialized. Layout:
+  header            @ 0x0000000000  (64B)
+  hash_table        @ 0x0000000040  (8388608 buckets × 8B = 65536 KB)
+  request_queues    @ 0x0004000040  (4 clients × 1 SNs = 4 queues)
+  worker_rings      @ 0x0004100340  (8 rings)
+  response_queues   @ 0x0004300940  (4 × 8 = 32 queues)
+  globalidmap       @ 0x0004b02140  (26812822 blocks → 3351603 B bitmap)
+  unifiedblockpool  @ 0x0004e34800  (26812822 blocks × 2048B = 52368 MB)
+  spillover         @ 0x0ccdeff800  (4 clients × 3350784 KB = 13403138 KB)
+[2RW] sn_req_consumers[0]=0x7f9f7717d000  NUMA node 0  (expected 0)  OK
+[2RW] sn_ring_producers[0]=0x7f9f7717c000  NUMA node 0  (expected 0)  OK
+[2RW] sync_state[0].gsn=0x7f9f7717b080  NUMA node 0  (expected 0)  OK
+[Poller] Started. Monitoring 4 × 8 ResponseQueues
+[2RW] Threads started: Poller=CPU0, SN[0..0]=CPU[1..1], Workers=CPU[2..9]
+[SN0] GSN Microbenchmark (isolated, 500000 iters, rdtscp): 18.04 ticks/fetch_add(1)
+[SN0] sync_state->gsn address: 0x7f9f7717b080
+[SN0] Started. Polling 4 RequestQueues → 8 WorkerRings (workers 0..7)
+[SN0]   Mode: dequeue_batch_pipelined (DEQUEUE_BATCH=4  READ_ACK_BATCH=32)
+[SN0]   Timing: rdtscp. A=pipelined_batch_deq/op  C=enq/op  F=flush/op
+[SN0] ops= 200000  wall=1575.3  A(deq/op)=36.0  C(enq/op)=1410.2  F(flush/op)=1.1  fw=0  empty=0
+[SN0] ops= 400000  wall=1574.8  A(deq/op)=35.9  C(enq/op)=1409.9  F(flush/op)=1.1  fw=0  empty=0
+[SN0] ops= 600000  wall=1555.7  A(deq/op)=35.8  C(enq/op)=1403.9  F(flush/op)=1.2  fw=0  empty=0
+[SN0] ops= 800000  wall=1556.1  A(deq/op)=35.6  C(enq/op)=1401.4  F(flush/op)=1.1  fw=0  empty=0
+[SN0] ops=1000000  wall=1587.3  A(deq/op)=35.6  C(enq/op)=1405.9  F(flush/op)=1.1  fw=0  empty=0
+[SN0] ops=1400000  wall=1572.1  A(deq/op)=35.6  C(enq/op)=1406.7  F(flush/op)=1.1  fw=0  empty=0
+[SN0] ops=1600000  wall=1557.8  A(deq/op)=35.6  C(enq/op)=1405.3  F(flush/op)=1.1  fw=0  empty=0
+[SN0] ops=1800000  wall=1588.5  A(deq/op)=35.6  C(enq/op)=1407.4  F(flush/op)=1.1  fw=0  empty=0
+[SN0] ops=2000000  wall=1591.3  A(deq/op)=35.6  C(enq/op)=1409.3  F(flush/op)=1.1  fw=0  empty=0
+[SN0] ops=2200000  wall=1572.1  A(deq/op)=35.6  C(enq/op)=1409.0  F(flush/op)=1.1  fw=0  empty=0
+[SN0] ops=2400000  wall=1574.9  A(deq/op)=35.5  C(enq/op)=1409.0  F(flush/op)=1.1  fw=0  empty=0
+[SN0] ops=2600000  wall=1566.3  A(deq/op)=35.5  C(enq/op)=1408.5  F(flush/op)=1.1  fw=0  empty=0
+[SN0] ops=2800000  wall=1565.4  A(deq/op)=35.6  C(enq/op)=1407.9  F(flush/op)=1.1  fw=0  empty=0
+[SN0] ops=3000000  wall=1572.4  A(deq/op)=35.6  C(enq/op)=1407.8  F(flush/op)=1.1  fw=0  empty=0
+[SN0] ops=3400000  wall=1557.3  A(deq/op)=35.6  C(enq/op)=1406.0  F(flush/op)=1.1  fw=0  empty=0
+[SN0] ops=3600000  wall=1541.9  A(deq/op)=35.6  C(enq/op)=1404.5  F(flush/op)=1.2  fw=0  empty=0
+[SN0] ops=3800000  wall=1571.6  A(deq/op)=35.6  C(enq/op)=1404.6  F(flush/op)=1.1  fw=0  empty=0
+[SN0] ops=4000000  wall=1575.4  A(deq/op)=35.6  C(enq/op)=1404.9  F(flush/op)=1.1  fw=0  empty=0
+[SN0] ops=4200000  wall=1559.4  A(deq/op)=35.6  C(enq/op)=1404.4  F(flush/op)=1.1  fw=0  empty=0
+[SN0] ops=4400000  wall=1564.6  A(deq/op)=35.6  C(enq/op)=1404.3  F(flush/op)=1.1  fw=0  empty=0
+[SN0] ops=5400000  wall=1564.6  A(deq/op)=35.5  C(enq/op)=1403.7  F(flush/op)=1.2  fw=0  empty=0
+[SN0] ops=5600000  wall=1561.5  A(deq/op)=35.5  C(enq/op)=1403.5  F(flush/op)=1.1  fw=0  empty=0
+[SN0] ops=6600000  wall=1557.5  A(deq/op)=35.5  C(enq/op)=1402.1  F(flush/op)=1.2  fw=0  empty=0
+[SN0] ops=6800000  wall=1583.3  A(deq/op)=35.6  C(enq/op)=1402.6  F(flush/op)=1.2  fw=0  empty=0
+[SN0] ops=7000000  wall=1552.9  A(deq/op)=35.6  C(enq/op)=1402.2  F(flush/op)=1.2  fw=0  empty=0
+[SN0] ops=8000000  wall=1557.1  A(deq/op)=35.6  C(enq/op)=1401.2  F(flush/op)=1.2  fw=0  empty=0
+[SN0] ops=8200000  wall=1549.4  A(deq/op)=35.6  C(enq/op)=1400.8  F(flush/op)=1.2  fw=0  empty=0
+[SN0] ops=8400000  wall=1550.5  A(deq/op)=35.6  C(enq/op)=1400.5  F(flush/op)=1.2  fw=0  empty=0
+[SN0] ops=9400000  wall=1556.8  A(deq/op)=35.6  C(enq/op)=1399.7  F(flush/op)=1.2  fw=0  empty=0
+[SN0] ops=9600000  wall=1562.6  A(deq/op)=35.6  C(enq/op)=1399.7  F(flush/op)=1.2  fw=0  empty=0
+[SN0] ops=9800000  wall=1545.7  A(deq/op)=35.6  C(enq/op)=1399.4  F(flush/op)=1.2  fw=0  empty=0
+[SN0] ops=10000000  wall=1535.2  A(deq/op)=35.6  C(enq/op)=1398.9  F(flush/op)=1.2  fw=0  empty=0
+[SN0] ops=10600000  wall=1499.1  A(deq/op)=35.5  C(enq/op)=1394.5  F(flush/op)=1.2  fw=0  empty=279
+[SN0] ops=10800000  wall=1493.4  A(deq/op)=35.5  C(enq/op)=1393.0  F(flush/op)=1.2  fw=0  empty=279
+[SN0] ops=12200000  wall=1493.8  A(deq/op)=35.4  C(enq/op)=1384.4  F(flush/op)=1.2  fw=0  empty=279
+[SN0] ops=13200000  wall=1494.0  A(deq/op)=35.4  C(enq/op)=1379.3  F(flush/op)=1.2  fw=0  empty=279
+[SN0] ops=13400000  wall=1494.1  A(deq/op)=35.4  C(enq/op)=1378.4  F(flush/op)=1.2  fw=0  empty=279
+[SN0] ops=13600000  wall=1493.2  A(deq/op)=35.4  C(enq/op)=1377.5  F(flush/op)=1.2  fw=0  empty=279
+[SN0] ops=14600000  wall=1493.8  A(deq/op)=35.4  C(enq/op)=1373.4  F(flush/op)=1.2  fw=0  empty=279
+[SN0] ops=14800000  wall=1492.0  A(deq/op)=35.4  C(enq/op)=1372.6  F(flush/op)=1.2  fw=0  empty=279
+[SN0] ops=15000000  wall=1489.5  A(deq/op)=35.4  C(enq/op)=1371.8  F(flush/op)=1.2  fw=0  empty=279
+[SN0] ===== Final Statistics =====
+[SN0]   total_routed  : 15000000
+[SN0]   empty_polls   : 1030658
+[SN0]   ring_fullwaits: 0
+[SN0]   flush calls   : 468516  (batch=32, raw/flush=36.8 ticks)
+[SN0]   wall ticks/op : 1744.9
+[SN0]
+[SN0]   Sub-operation breakdown (rdtscp-serialized, avg ticks/op):
+[SN0]     A  pipelined batch deq/op  :   35.4  (DEQUEUE_BATCH=4)
+[SN0]     C  ring enqueue/op         : 1371.8  (CXL NT+2×sfence)
+[SN0]     F  flush amortised/op      :    1.2  (READ_ACK_BATCH=32)
+[SN0]     loop+rdtscp overhead/op    :  336.6
+[SN0]   Per RequestQueue:
+[SN0]     ReqQ[0]: 3750000
+[SN0]     ReqQ[1]: 3750000
+[SN0]     ReqQ[2]: 3750000
+[SN0]     ReqQ[3]: 3750000
+[SN0]   Per WorkerRing (global IDs):
+[SN0]     Worker[0]: enqueued=1915409  fullwaits=0
+[SN0]     Worker[1]: enqueued=1900391  fullwaits=0
+[SN0]     Worker[2]: enqueued=1853491  fullwaits=0
+[SN0]     Worker[3]: enqueued=1917034  fullwaits=0
+[SN0]     Worker[4]: enqueued=1830376  fullwaits=0
+[SN0]     Worker[5]: enqueued=1856518  fullwaits=0
+[SN0]     Worker[6]: enqueued=1896085  fullwaits=0
+[SN0]     Worker[7]: enqueued=1830696  fullwaits=0
+[Poller] Stopped. scan_rounds=28207635  uintrs_sent=11
+==============================================
+SharedKV 2RW YCSB Benchmark
+==============================================
+  Workload:              workloada
+  NUMA node:             2
+  num_clients (n):       4
+  num_workers (m):       8
+  num_synchronizers (s): 1  (workers per SN: 8)
+  slots_per_client:      1024
+  num_buckets:           8388608
+  queue_depth:           1024
+  memory_size:           64 GB
+  CPU layout:
+    Poller:     CPU 0
+    SN0:        CPU 1
+    Workers:    CPU 2..9
+    ReqTh:      CPU 14..17
+    RespTh:     CPU 18..21
+  dequeue_batch:         4
+  read_ack_batch:        32
+  local_workerring:      no (CXL)
+  stats:                 disabled
+  counters:              disabled
+  verbose:               disabled
+  Mode:         Latency  (1250000 ops/client, 5000000 total)
+==============================================
+
+[Benchmark] Loaded 10000000 operations from workloads/workloada_load.txt
+[Benchmark] Loaded 10000000 operations from workloads/workloada_trans.txt
+  TSC frequency: ~2100 MHz
+
+
+[Main] ===== LOAD PHASE =====
+
+==============================================
+LOAD PHASE Results:
+==============================================
+  Total ops:    10000000
+  Successful:   10000000
+  Failed:       0
+  Duration:     7.445 s
+  Throughput:   1343206 ops/s
+==============================================
+
+[Main] ===== TRANSACTION PHASE =====
+
+==============================================
+TRANSACTION PHASE Results:
+==============================================
+  Total ops:    5000000
+  Successful:   5000000
+  Failed:       0
+  Duration:     3.557 s
+  Throughput:   1405572 ops/s
+  Decomposed Latency (5000000 samples, TSC ~2100 MHz):
+  Stage                          avg(us)       p50       p99       max
+  t0→t1 pool→RequestQueue       2.06      0.01     66.94    172.23
+  t1→t2 Sync dispatch         11573.41  11603.13  11731.44  14341.88
+  t2→t3 Worker execution          0.48      0.37      1.67   2232.60
+  t0→t3 end-to-end            11575.95  11605.67  11734.04  14342.63
+==============================================
+

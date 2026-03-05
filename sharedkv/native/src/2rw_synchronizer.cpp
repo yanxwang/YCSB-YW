@@ -81,6 +81,7 @@ void two_rw_synchronizer_run(SyncThreadState* s) {
     //   the stack (KVRequest × DEQUEUE_BATCH bytes).
     // READ_ACK_BATCH: flush read_idx to CXL every this many dequeues per queue.
     //   Safe limit: Capacity / 4 (default queue_depth=1024 → 256 max).
+    // 8/32
     const uint32_t DEQUEUE_BATCH  = s->dequeue_batch;
     const uint32_t READ_ACK_BATCH = s->read_ack_batch;
 

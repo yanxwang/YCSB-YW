@@ -1,0 +1,77 @@
+[2RW Config]
+  numa_node            = 2
+  num_clients (n)      = 8
+  num_workers (m)      = 10
+  num_synchronizers(s) = 1  (workers per SN: 10)
+  slots_per_client     = 1024  (blocks pre-alloc per client)
+  num_buckets          = 8388608
+  queue_depth          = 1024
+  memory_size          = 65536 MB
+  worker_cpu_start     = 3  (workers on CPU 3..12)
+  local_workerring     = yes (DRAM)
+[2RW] NUMA topology: CPU0_node=0  CXL_node=2  OK (CPU0 local DRAM != CXL node)
+[2RW] NUMA node 2: total=262144 MB, free=262055 MB, requested=65536 MB
+[2RW] CXL memory initialized. Layout:
+  header            @ 0x0000000000  (64B)
+  hash_table        @ 0x0000000040  (8388608 buckets × 8B = 65536 KB)
+  request_queues    @ 0x0004000040  (8 clients × 1 SNs = 8 queues)
+  worker_rings      @ 0x0004200640  (10 rings)
+  response_queues   @ 0x0004480dc0  (8 × 10 = 80 queues)
+  globalidmap       @ 0x00058849c0  (26807288 blocks → 3350911 B bitmap)
+  unifiedblockpool  @ 0x0005bb7000  (26807288 blocks × 2048B = 52357 MB)
+  spillover         @ 0x0cce1b3000  (8 clients × 1675046 KB = 13400372 KB)
+[2RW] sn_req_consumers[0]=0x7f8de509a000  NUMA node 0  (expected 0)  OK
+[2RW] sn_ring_producers[0]=0x7f8de5099000  NUMA node 0  (expected 0)  OK
+[2RW] local_workerring: allocated 10 DRAM rings (256 KB each)
+[2RW] sync_state[0].gsn=0x7f8de5098080  NUMA node 0  (expected 0)  OK
+[Poller] Started. Monitoring 8 × 10 ResponseQueues
+[2RW] Threads started: Poller=CPU0, SN[0..0]=CPU[1..1], Workers=CPU[3..12]
+[SN0] GSN Microbenchmark (isolated, 500000 iters, rdtscp): 18.06 ticks/fetch_add(1)
+[SN0] sync_state->gsn address: 0x7f8de5098080
+[SN0] Started. Polling 8 RequestQueues → 10 WorkerRings (workers 0..9)
+[SN0]   Mode: dequeue_batch_pipelined (DEQUEUE_BATCH=16  READ_ACK_BATCH=32)
+[SN0]   Timing: rdtscp. A=pipelined_batch_deq/op  C=enq/op  F=flush/op
+[SN0] ops= 800000  wall=425.2  A(deq/op)=264.1  C(enq/op)=106.2  F(flush/op)=1.0  fw=0  empty=0
+[SN0] ops=2000000  wall=428.2  A(deq/op)=264.8  C(enq/op)=107.4  F(flush/op)=1.0  fw=0  empty=0
+[SN0] ops=5600000  wall=425.9  A(deq/op)=263.6  C(enq/op)=108.0  F(flush/op)=1.0  fw=0  empty=0
+[SN0] ops=8200000  wall=423.5  A(deq/op)=262.6  C(enq/op)=108.1  F(flush/op)=1.0  fw=0  empty=0
+[SN0] ops=10000000  wall=471.2  A(deq/op)=266.3  C(enq/op)=108.1  F(flush/op)=1.0  fw=0  empty=0
+[SN0] ops=11800000  wall=227.0  A(deq/op)=235.4  C(enq/op)=108.4  F(flush/op)=1.0  fw=0  empty=237
+[SN0] ops=15000000  wall=230.0  A(deq/op)=199.4  C(enq/op)=109.1  F(flush/op)=1.0  fw=0  empty=237
+[SN0] ops=17000000  wall=239.6  A(deq/op)=184.8  C(enq/op)=109.4  F(flush/op)=1.0  fw=0  empty=237
+[SN0] ops=17600000  wall=238.7  A(deq/op)=181.1  C(enq/op)=109.5  F(flush/op)=1.0  fw=0  empty=237
+[SN0] ops=18400000  wall=241.8  A(deq/op)=176.6  C(enq/op)=109.6  F(flush/op)=1.0  fw=0  empty=237
+[SN0] ops=20000000  wall=297.0  A(deq/op)=171.4  C(enq/op)=109.7  F(flush/op)=1.0  fw=0  empty=248
+[Poller] Stopped. scan_rounds=13190712  uintrs_sent=16
+[SN0] ===== Final Statistics =====
+[SN0]   total_routed  : 20000000
+[SN0]   empty_polls   : 1016865
+[SN0]   ring_fullwaits: 0
+[SN0]   flush calls   : 541981  (batch=32, raw/flush=37.4 ticks)
+[SN0]   wall ticks/op : 641.8
+[SN0]
+[SN0]   Sub-operation breakdown (rdtscp-serialized, avg ticks/op):
+[SN0]     A  pipelined batch deq/op  :  171.4  (DEQUEUE_BATCH=16)
+[SN0]     C  ring enqueue/op         :  109.7  (DRAM release-store)
+[SN0]     F  flush amortised/op      :    1.0  (READ_ACK_BATCH=32)
+[SN0]     loop+rdtscp overhead/op    :  359.6
+[SN0]   Per RequestQueue:
+[SN0]     ReqQ[0]: 2500000
+[SN0]     ReqQ[1]: 2500000
+[SN0]     ReqQ[2]: 2500000
+[SN0]     ReqQ[3]: 2500000
+[SN0]     ReqQ[4]: 2500000
+[SN0]     ReqQ[5]: 2500000
+[SN0]     ReqQ[6]: 2500000
+[SN0]     ReqQ[7]: 2500000
+[SN0]   Per WorkerRing (global IDs):
+[SN0]     Worker[0]: enqueued=2022620  fullwaits=0
+[SN0]     Worker[1]: enqueued=2029244  fullwaits=0
+[SN0]     Worker[2]: enqueued=1996213  fullwaits=0
+[SN0]     Worker[3]: enqueued=1999883  fullwaits=0
+[SN0]     Worker[4]: enqueued=1979039  fullwaits=0
+[SN0]     Worker[5]: enqueued=1976848  fullwaits=0
+[SN0]     Worker[6]: enqueued=2054058  fullwaits=0
+[SN0]     Worker[7]: enqueued=2053739  fullwaits=0
+[SN0]     Worker[8]: enqueued=1943192  fullwaits=0
+[SN0]     Worker[9]: enqueued=1945164  fullwaits=0
