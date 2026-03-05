@@ -81,8 +81,8 @@ void two_rw_synchronizer_run(SyncThreadState* s) {
     //   the stack (KVRequest × DEQUEUE_BATCH bytes).
     // READ_ACK_BATCH: flush read_idx to CXL every this many dequeues per queue.
     //   Safe limit: Capacity / 4 (default queue_depth=1024 → 256 max).
-    static constexpr uint32_t DEQUEUE_BATCH  = 8;
-    static constexpr uint32_t READ_ACK_BATCH = 32;
+    const uint32_t DEQUEUE_BATCH  = s->dequeue_batch;
+    const uint32_t READ_ACK_BATCH = s->read_ack_batch;
 
     uint32_t queue_idx    = 0;
     uint64_t total_routed = 0;
@@ -116,7 +116,7 @@ void two_rw_synchronizer_run(SyncThreadState* s) {
         sn_id);
 
     uint32_t aux;
-    KVRequest batch[DEQUEUE_BATCH];  // stack-allocated, avoids heap per iteration
+    KVRequest* batch = new KVRequest[DEQUEUE_BATCH];  // sized by runtime parameter
 
     while (true) {
         bool found_any = false;
@@ -295,6 +295,7 @@ drain_done:;
         fprintf(stderr, "[SN%u]     Worker[%u]: enqueued=%lu  fullwaits=%lu\n",
                 sn_id, workers_base + i, worker_enqueued[i], worker_fullwaits[i]);
 
+    delete[] batch;
     delete[] queue_dequeued;
     delete[] worker_enqueued;
     delete[] worker_fullwaits;

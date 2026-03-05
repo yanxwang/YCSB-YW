@@ -1,0 +1,353 @@
+[2RW Config]
+  numa_node            = 1
+  num_clients (n)      = 2
+  num_workers (m)      = 16
+  num_synchronizers(s) = 1  (workers per SN: 16)
+  slots_per_client     = 1024  (blocks pre-alloc per client)
+  num_buckets          = 8388608
+  queue_depth          = 4096
+  memory_size          = 65536 MB
+  worker_cpu_start     = 2  (workers on CPU 2..17)
+  local_workerring     = yes (DRAM)
+[2RW] NUMA topology: CPU0_node=0  CXL_node=1  OK (CPU0 local DRAM != CXL node)
+[2RW] NUMA node 1: total=524288 MB, free=524192 MB, requested=65536 MB
+[2RW] CXL memory initialized. Layout:
+  header            @ 0x0000000000  (64B)
+  hash_table        @ 0x0000000040  (8388608 buckets × 8B = 65536 KB)
+  request_queues    @ 0x0004000040  (2 clients × 1 SNs = 2 queues)
+  worker_rings      @ 0x00040801c0  (16 rings)
+  response_queues   @ 0x0004480dc0  (2 × 16 = 32 queues)
+  globalidmap       @ 0x0004c825c0  (26812207 blocks → 3351526 B bitmap)
+  unifiedblockpool  @ 0x0004fb5000  (26812207 blocks × 2048B = 52367 MB)
+  spillover         @ 0x0ccdf4c800  (2 clients × 6701415 KB = 13402830 KB)
+[2RW] sn_req_consumers[0]=0x7f0235693000  NUMA node 0  (expected 0)  OK
+[2RW] sn_ring_producers[0]=0x7f0235692000  NUMA node 0  (expected 0)  OK
+[2RW] local_workerring: allocated 16 DRAM rings (256 KB each)
+[2RW] sync_state[0].gsn=0x7f0235691080  NUMA node 0  (expected 0)  OK
+[2RW] Threads started: Poller=CPU0, SN[0..0]=CPU[1..1], Workers=CPU[2..17]
+[Poller] Started. Monitoring 2 × 16 ResponseQueues
+[RespTh-0] UINTR fd=7, pinned CPU 20
+[RespTh-1] UINTR fd=8, pinned CPU 21
+[SN0] GSN Microbenchmark (isolated, 500000 iters, rdtscp): 25.25 ticks/fetch_add(1)
+[SN0] sync_state->gsn address: 0x7f0235691080
+[SN0] Started. Polling 2 RequestQueues → 16 WorkerRings (workers 0..15)
+[SN0]   Mode: dequeue_batch_pipelined (DEQUEUE_BATCH=8  READ_ACK_BATCH=32)
+[SN0]   Timing: rdtscp. A=pipelined_batch_deq/op  C=enq/op  F=flush/op
+[SN0] ops= 200000  wall=1948.4  A(deq/op)=1545.7  C(enq/op)=339.9  F(flush/op)=1.0  fw=0  empty=1
+[SN0] ops= 600000  wall=2095.5  A(deq/op)=1643.9  C(enq/op)=339.3  F(flush/op)=1.0  fw=0  empty=7
+[SN0] ops= 800000  wall=2097.1  A(deq/op)=1656.4  C(enq/op)=339.3  F(flush/op)=1.0  fw=0  empty=9
+[SN0] ops=1000000  wall=2094.9  A(deq/op)=1663.4  C(enq/op)=339.4  F(flush/op)=0.9  fw=0  empty=9
+[SN0] ops=1200000  wall=2087.5  A(deq/op)=1666.8  C(enq/op)=339.5  F(flush/op)=0.9  fw=0  empty=9
+[SN0] ops=1400000  wall=2083.9  A(deq/op)=1668.9  C(enq/op)=339.4  F(flush/op)=0.9  fw=0  empty=10
+[SN0] ops=1600000  wall=2091.2  A(deq/op)=1670.8  C(enq/op)=339.8  F(flush/op)=0.9  fw=0  empty=30
+[SN0] ops=2000000  wall=2091.0  A(deq/op)=1673.5  C(enq/op)=340.4  F(flush/op)=0.9  fw=0  empty=42
+[SN0] ops=2200000  wall=2078.4  A(deq/op)=1673.4  C(enq/op)=340.6  F(flush/op)=0.9  fw=0  empty=42
+[SN0] ops=2400000  wall=2076.9  A(deq/op)=1673.2  C(enq/op)=340.7  F(flush/op)=0.9  fw=0  empty=42
+[SN0] ops=2600000  wall=2071.3  A(deq/op)=1672.6  C(enq/op)=340.9  F(flush/op)=0.9  fw=0  empty=42
+[SN0] ops=2800000  wall=2081.4  A(deq/op)=1672.6  C(enq/op)=341.1  F(flush/op)=0.9  fw=0  empty=43
+[SN0] ops=3000000  wall=2083.7  A(deq/op)=1672.9  C(enq/op)=341.3  F(flush/op)=0.9  fw=0  empty=43
+[SN0] ops=3200000  wall=2075.9  A(deq/op)=1672.7  C(enq/op)=341.4  F(flush/op)=0.9  fw=0  empty=43
+[SN0] ops=3600000  wall=2078.6  A(deq/op)=1672.4  C(enq/op)=341.8  F(flush/op)=0.9  fw=0  empty=45
+[SN0] ops=3800000  wall=2078.9  A(deq/op)=1672.3  C(enq/op)=341.9  F(flush/op)=0.9  fw=0  empty=45
+[SN0] ops=4200000  wall=2080.8  A(deq/op)=1672.3  C(enq/op)=342.2  F(flush/op)=0.9  fw=0  empty=46
+[SN0] ops=4400000  wall=2073.7  A(deq/op)=1672.0  C(enq/op)=342.4  F(flush/op)=0.9  fw=0  empty=47
+[SN0] ops=4600000  wall=2080.7  A(deq/op)=1671.9  C(enq/op)=342.5  F(flush/op)=0.9  fw=0  empty=47
+[SN0] ops=4800000  wall=2081.7  A(deq/op)=1672.0  C(enq/op)=342.6  F(flush/op)=0.9  fw=0  empty=48
+[SN0] ops=5200000  wall=2079.8  A(deq/op)=1671.8  C(enq/op)=343.0  F(flush/op)=0.9  fw=0  empty=52
+[SN0] ops=5400000  wall=2078.1  A(deq/op)=1671.6  C(enq/op)=343.2  F(flush/op)=0.9  fw=0  empty=57
+[SN0] ops=5600000  wall=2082.4  A(deq/op)=1671.5  C(enq/op)=343.4  F(flush/op)=0.9  fw=0  empty=59
+[SN0] ops=5800000  wall=2081.5  A(deq/op)=1671.4  C(enq/op)=343.6  F(flush/op)=0.9  fw=0  empty=59
+[SN0] ops=6000000  wall=2080.2  A(deq/op)=1671.3  C(enq/op)=343.7  F(flush/op)=0.9  fw=0  empty=59
+[SN0] ops=6200000  wall=2082.4  A(deq/op)=1671.2  C(enq/op)=343.9  F(flush/op)=0.9  fw=0  empty=64
+[SN0] ops=6400000  wall=2082.6  A(deq/op)=1671.2  C(enq/op)=344.1  F(flush/op)=0.9  fw=0  empty=64
+[SN0] ops=6800000  wall=2089.6  A(deq/op)=1671.3  C(enq/op)=344.6  F(flush/op)=0.9  fw=0  empty=80
+[SN0] ops=7000000  wall=2089.5  A(deq/op)=1671.5  C(enq/op)=344.7  F(flush/op)=0.9  fw=0  empty=80
+[SN0] ops=7200000  wall=2083.7  A(deq/op)=1671.4  C(enq/op)=344.9  F(flush/op)=0.9  fw=0  empty=81
+[SN0] ops=7400000  wall=2086.0  A(deq/op)=1671.4  C(enq/op)=345.1  F(flush/op)=0.9  fw=0  empty=82
+[SN0] ops=7600000  wall=2075.2  A(deq/op)=1671.1  C(enq/op)=345.3  F(flush/op)=0.9  fw=0  empty=82
+[SN0] ops=7800000  wall=2079.0  A(deq/op)=1670.8  C(enq/op)=345.5  F(flush/op)=0.9  fw=0  empty=82
+[SN0] ops=8200000  wall=2077.2  A(deq/op)=1670.4  C(enq/op)=345.8  F(flush/op)=0.9  fw=0  empty=84
+[SN0] ops=8400000  wall=2075.8  A(deq/op)=1670.1  C(enq/op)=346.0  F(flush/op)=0.9  fw=0  empty=87
+[SN0] ops=8600000  wall=2072.7  A(deq/op)=1669.7  C(enq/op)=346.2  F(flush/op)=0.9  fw=0  empty=87
+[SN0] ops=9000000  wall=2076.5  A(deq/op)=1669.3  C(enq/op)=346.6  F(flush/op)=0.9  fw=0  empty=88
+[SN0] ops=9200000  wall=2073.2  A(deq/op)=1669.0  C(enq/op)=346.7  F(flush/op)=0.9  fw=0  empty=88
+[SN0] ops=9400000  wall=2075.4  A(deq/op)=1668.7  C(enq/op)=346.9  F(flush/op)=0.9  fw=0  empty=88
+[SN0] ops=9600000  wall=2081.7  A(deq/op)=1668.6  C(enq/op)=347.1  F(flush/op)=0.9  fw=0  empty=88
+[SN0] ops=9800000  wall=2079.6  A(deq/op)=1668.5  C(enq/op)=347.2  F(flush/op)=0.9  fw=0  empty=88
+[SN0] ops=10000000  wall=3034.0  A(deq/op)=1675.7  C(enq/op)=350.6  F(flush/op)=0.9  fw=0  empty=158
+[RespTh-0] UINTR fd=3, pinned CPU 20
+[RespTh-1] UINTR fd=4, pinned CPU 21
+[SN0] ops=10400000  wall=9439.4  A(deq/op)=1667.3  C(enq/op)=364.9  F(flush/op)=0.9  fw=0  empty=832085
+[SN0] ops=10800000  wall=2222.7  A(deq/op)=1659.0  C(enq/op)=378.3  F(flush/op)=0.9  fw=0  empty=832085
+[SN0] ops=11000000  wall=2226.3  A(deq/op)=1655.1  C(enq/op)=384.7  F(flush/op)=0.9  fw=0  empty=832085
+[SN0] ops=11200000  wall=2209.6  A(deq/op)=1651.2  C(enq/op)=390.7  F(flush/op)=0.9  fw=0  empty=832085
+[SN0] ops=11400000  wall=2220.8  A(deq/op)=1647.4  C(enq/op)=396.7  F(flush/op)=0.9  fw=0  empty=832085
+[SN0] ops=11800000  wall=2225.0  A(deq/op)=1640.4  C(enq/op)=408.0  F(flush/op)=0.9  fw=0  empty=832085
+[SN0] ops=12000000  wall=2225.4  A(deq/op)=1637.0  C(enq/op)=413.4  F(flush/op)=0.9  fw=0  empty=832085
+[SN0] ops=12200000  wall=2245.5  A(deq/op)=1634.7  C(enq/op)=418.1  F(flush/op)=0.9  fw=0  empty=832086
+[SN0] ops=12400000  wall=2393.6  A(deq/op)=1634.1  C(enq/op)=423.2  F(flush/op)=0.9  fw=0  empty=832087
+[SN0] ops=12800000  wall=2392.8  A(deq/op)=1633.1  C(enq/op)=433.0  F(flush/op)=0.9  fw=0  empty=832088
+[SN0] ops=13200000  wall=2393.4  A(deq/op)=1632.1  C(enq/op)=442.2  F(flush/op)=0.9  fw=0  empty=832092
+[SN0] ops=13400000  wall=2373.5  A(deq/op)=1631.4  C(enq/op)=446.4  F(flush/op)=0.9  fw=0  empty=832093
+[SN0] ops=13600000  wall=2391.0  A(deq/op)=1630.9  C(enq/op)=450.7  F(flush/op)=0.9  fw=0  empty=832094
+[SN0] ops=14000000  wall=2389.9  A(deq/op)=1629.9  C(enq/op)=458.9  F(flush/op)=0.9  fw=0  empty=832094
+[SN0] ops=14600000  wall=2345.7  A(deq/op)=1627.8  C(enq/op)=469.2  F(flush/op)=0.9  fw=0  empty=832095
+[SN0] ops=14800000  wall=2394.3  A(deq/op)=1627.5  C(enq/op)=472.7  F(flush/op)=0.9  fw=0  empty=832095
+[SN0] ops=15000000  wall=2390.4  A(deq/op)=1627.1  C(enq/op)=476.3  F(flush/op)=0.9  fw=0  empty=832097
+[SN0] ops=15400000  wall=2391.8  A(deq/op)=1626.3  C(enq/op)=483.0  F(flush/op)=0.9  fw=0  empty=832100
+[SN0] ops=15600000  wall=2393.1  A(deq/op)=1626.0  C(enq/op)=486.3  F(flush/op)=0.9  fw=0  empty=832101
+[SN0] ops=15800000  wall=2393.5  A(deq/op)=1625.6  C(enq/op)=489.4  F(flush/op)=0.9  fw=0  empty=832101
+[SN0] ops=16000000  wall=2394.0  A(deq/op)=1625.3  C(enq/op)=492.5  F(flush/op)=0.9  fw=0  empty=832102
+[SN0] ops=16400000  wall=2392.6  A(deq/op)=1624.7  C(enq/op)=498.4  F(flush/op)=0.9  fw=0  empty=832103
+[SN0] ops=16600000  wall=2390.5  A(deq/op)=1624.3  C(enq/op)=501.3  F(flush/op)=0.9  fw=0  empty=832104
+[SN0] ops=16800000  wall=2390.3  A(deq/op)=1624.0  C(enq/op)=504.1  F(flush/op)=0.9  fw=0  empty=832105
+[SN0] ops=17200000  wall=2393.6  A(deq/op)=1623.5  C(enq/op)=509.5  F(flush/op)=0.9  fw=0  empty=832106
+[SN0] ops=17400000  wall=2396.1  A(deq/op)=1623.2  C(enq/op)=512.1  F(flush/op)=0.9  fw=0  empty=832108
+[SN0] ops=17600000  wall=2392.4  A(deq/op)=1622.9  C(enq/op)=514.7  F(flush/op)=0.9  fw=0  empty=832109
+[SN0] ops=18600000  wall=2344.0  A(deq/op)=1620.5  C(enq/op)=525.1  F(flush/op)=0.9  fw=0  empty=832116
+[SN0] ops=20000000  wall=2543.0  A(deq/op)=1612.7  C(enq/op)=550.9  F(flush/op)=0.9  fw=7539036  empty=832724
+==============================================
+SharedKV 2RW YCSB Benchmark
+==============================================
+  Workload:              workloadc
+  NUMA node:             1
+  num_clients (n):       2
+  num_workers (m):       16
+  num_synchronizers (s): 1  (workers per SN: 16)
+  slots_per_client:      1024
+  num_buckets:           8388608
+  queue_depth:           4096
+  memory_size:           64 GB
+  CPU layout:
+    Poller:     CPU 0
+    SN0:        CPU 1
+    Workers:    CPU 2..17
+    ReqTh:      CPU 18..19
+    RespTh:     CPU 20..21
+  local_workerring:      yes (DRAM)
+  stats:                 enabled
+  counters:              enabled
+  verbose:               enabled
+  Mode:         Latency  (5000000 ops/client, 10000000 total)
+==============================================
+
+[Main] Loading workload files...
+[Benchmark] Loaded 10000000 operations from /mnt/ywang/workloads/workloadc_load.txt
+[Benchmark] Loaded 10000000 operations from /mnt/ywang/workloads/workloadc_trans.txt
+[Main] load_ops=10000000  trans_ops=10000000
+
+[Main] Initializing 2RW context...
+[Main] Starting core threads (Sync, Poller, Workers)...
+
+[Main] ===== LOAD PHASE =====
+
+===== Pipeline Counters =====
+
+--- Request Threads (enqueue → RequestQueue) ---
+  Client       submitted     enq_waits
+  RT-0           5000000             0
+  RT-1           5000000             0
+  TOTAL         10000000             0
+
+--- Response Threads (dequeue ← ResponseQueue) ---
+  Client       completed        failed  drain_rounds  empty_rounds   uintr_wakes
+  RT-0           5000000             0           515           488           514
+  RT-1           5000000             0           489           456           488
+  TOTAL         10000000             0          1004           944          1002
+  recycle_waits (total): 0
+
+=============================
+
+==============================================
+LOAD PHASE Results:
+==============================================
+  Total ops:    10000000
+  Successful:   10000000
+  Failed:       0
+  Duration:     10.499 s
+  Throughput:   952516 ops/s
+==============================================
+
+
+=== Hash Table Bucket Chain Length Distribution ===
+  Total buckets : 8388608
+  Non-empty     : 5916272  (70.5%)
+  Total nodes   : 10000000
+  Max chain     : 9
+  Avg chain len (all buckets)       : 1.1921
+  Avg chain len (non-empty buckets) : 1.6903
+
+  Depth      # Buckets       %
+  0            2472336  29.47%
+  1            3096914  36.92%
+  2            1859106  22.16%
+  3             714596   8.52%
+  4             196252   2.34%
+  5              41478   0.49%
+  6               6910   0.08%
+  7                912   0.01%
+  8                 92   0.00%
+  9                 12   0.00%
+===================================================
+
+[Main] ===== TRANSACTION PHASE =====
+
+===== Pipeline Counters =====
+
+--- Request Threads (enqueue → RequestQueue) ---
+  Client       submitted     enq_waits
+  RT-0           5000000             0
+  RT-1           5000000             0
+  TOTAL         10000000             0
+
+--- Response Threads (dequeue ← ResponseQueue) ---
+  Client       completed        failed  drain_rounds  empty_rounds   uintr_wakes
+  RT-0           5000000             0             1             0             0
+  RT-1           5000000             0          3892          3806          3891
+  TOTAL         10000000             0          3893          3806          3891
+  recycle_waits (total): 650375984
+
+=============================
+
+==============================================
+TRANSACTION PHASE Results:
+==============================================
+  Total ops:    10000000
+  Successful:   10000000
+  Failed:       0
+  Duration:     11.861 s
+  Throughput:   843118 ops/s
+  Decomposed Latency (10000000 samples, TSC ~2000 MHz):
+  Stage                          avg(us)       p50       p99       max
+  t0→t1 pool→RequestQueue       0.01      0.01      0.02      7.14
+  t1→t2 Sync dispatch           765.36      7.82  36102.11  77748.96
+  t2→t3 Worker execution          0.47      0.41      1.15     36.31
+  t0→t3 end-to-end [Poller] Stopped. scan_rounds=89759434  uintrs_sent=4
+[SN0] ===== Final Statistics =====
+[SN0]   total_routed  : 20000000
+[SN0]   empty_polls   : 5889296
+[SN0]   ring_fullwaits: 7539036
+[SN0]   flush calls   : 614861  (batch=32, raw/flush=30.6 ticks)
+[SN0]   wall ticks/op : 3250.5
+[SN0]
+[SN0]   Sub-operation breakdown (rdtscp-serialized, avg ticks/op):
+[SN0]     A  pipelined batch deq/op  : 1612.7  (DEQUEUE_BATCH=8)
+[SN0]     C  ring enqueue/op         :  550.9  (DRAM release-store)
+[SN0]     F  flush amortised/op      :    0.9  (READ_ACK_BATCH=32)
+[SN0]     loop+rdtscp overhead/op    : 1086.0
+[SN0]   Per RequestQueue:
+[SN0]     ReqQ[0]: 10000000
+[SN0]     ReqQ[1]: 10000000
+[SN0]   Per WorkerRing (global IDs):
+[SN0]     Worker[0]: enqueued=1240816  fullwaits=0
+[SN0]     Worker[1]: enqueued=1283344  fullwaits=0
+[SN0]     Worker[2]: enqueued=1191679  fullwaits=0
+[SN0]     Worker[3]: enqueued=1240237  fullwaits=0
+[SN0]     Worker[4]: enqueued=1248396  fullwaits=0
+[SN0]     Worker[5]: enqueued=1190298  fullwaits=0
+[SN0]     Worker[6]: enqueued=1264482  fullwaits=0
+[SN0]     Worker[7]: enqueued=1247738  fullwaits=0
+[SN0]     Worker[8]: enqueued=1338539  fullwaits=0
+[SN0]     Worker[9]: enqueued=1268161  fullwaits=0
+[SN0]     Worker[10]: enqueued=1268370  fullwaits=0
+[SN0]     Worker[11]: enqueued=1341946  fullwaits=7539036
+[SN0]     Worker[12]: enqueued=1162451  fullwaits=0
+[SN0]     Worker[13]: enqueued=1268913  fullwaits=0
+[SN0]     Worker[14]: enqueued=1281435  fullwaits=0
+[SN0]     Worker[15]: enqueued=1163195  fullwaits=0
+[2RW] SN0 final GSN: 20000000
+             765.85      8.30  36102.35  77749.19
+==============================================
+
+
+===== Worker Summary (0..15) =====
+--- Workers (dequeue ← WorkerRing, enqueue → ResponseQueue) ---
+  Worker        ops_done   empty_polls  resp_fullwaits
+  W-0            1240816     309255280             0
+  W-1            1283344     302900258             0
+  W-2            1191679     196995616             0
+  W-3            1240237     213824646             0
+  W-4            1248396      83607078             0
+  W-5            1190298     184423585             0
+  W-6            1264482     159570277             0
+  W-7            1247738      82937655             0
+  W-8            1338539     227223439       2337358
+  W-9            1268161     225414659             0
+  W-10           1268370     213741209             0
+  W-11           1341946     173416380       1540559
+  W-12           1162451      58620824             0
+  W-13           1268913     174969510             0
+  W-14           1281435     156764792             0
+  W-15           1163195     276239273             0
+
+    GET         total=  615701  hit=  615701  miss=       0  chain_avg= 1.75
+               depth:  [ 1]=289386  [ 2]=203403  [ 3]=116336  [ 4]=2128  [ 5]=4443  [ 6]=4  [ 7]=1
+    PUT/UPDATE  total=  625115  hit=       0  miss=  625115  chain_avg= 0.57
+               depth:  [ 0]=370440  [ 1]=176090  [ 2]=59731  [ 3]=15228  [ 4]=3051  [ 5]=495  [ 6]=74  [ 7]=4  [ 8]=2
+    GET         total=  658363  hit=  658363  miss=       0  chain_avg= 1.90
+               depth:  [ 1]=212680  [ 2]=345712  [ 3]=56400  [ 4]=42884  [ 5]=427  [ 6]=259  [ 7]=1
+    PUT/UPDATE  total=  624981  hit=       0  miss=  624981  chain_avg= 0.57
+               depth:  [ 0]=369993  [ 1]=176274  [ 2]=60023  [ 3]=15177  [ 4]=3003  [ 5]=455  [ 6]=53  [ 7]=3
+    GET         total=  566487  hit=  566487  miss=       0  chain_avg= 1.78
+               depth:  [ 1]=162858  [ 2]=377908  [ 3]=18314  [ 4]=3342  [ 5]=4037  [ 7]=28
+    PUT/UPDATE  total=  625192  hit=       0  miss=  625192  chain_avg= 0.58
+               depth:  [ 0]=369258  [ 1]=176060  [ 2]=60330  [ 3]=15692  [ 4]=3246  [ 5]=518  [ 6]=73  [ 7]=13  [ 8]=2
+    GET         total=  615122  hit=  615122  miss=       0  chain_avg= 1.75
+               depth:  [ 1]=287497  [ 2]=202293  [ 3]=118753  [ 4]=2039  [ 5]=4531  [ 6]=9
+    PUT/UPDATE  total=  625115  hit=       0  miss=  625115  chain_avg= 0.57
+               depth:  [ 0]=370440  [ 1]=176090  [ 2]=59731  [ 3]=15228  [ 4]=3051  [ 5]=495  [ 6]=74  [ 7]=4  [ 8]=2
+    GET         total=  623523  hit=  623523  miss=       0  chain_avg= 1.83
+               depth:  [ 1]=161344  [ 2]=411470  [ 3]=47859  [ 4]=2184  [ 5]=614  [ 6]=52
+    PUT/UPDATE  total=  624873  hit=       0  miss=  624873  chain_avg= 0.57
+               depth:  [ 0]=369578  [ 1]=176382  [ 2]=60036  [ 3]=15252  [ 4]=3081  [ 5]=480  [ 6]=57  [ 7]=6  [ 8]=1
+    GET         total=  565106  hit=  565106  miss=       0  chain_avg= 1.78
+               depth:  [ 1]=161936  [ 2]=377646  [ 3]=18124  [ 4]=3259  [ 5]=4116  [ 6]=1  [ 7]=24
+    PUT/UPDATE  total=  625192  hit=       0  miss=  625192  chain_avg= 0.58
+               depth:  [ 0]=369258  [ 1]=176060  [ 2]=60330  [ 3]=15692  [ 4]=3246  [ 5]=518  [ 6]=73  [ 7]=13  [ 8]=2
+    GET         total=  639459  hit=  639459  miss=       0  chain_avg= 1.93
+               depth:  [ 1]=183801  [ 2]=337168  [ 3]=103150  [ 4]=10921  [ 5]=4321  [ 6]=97  [ 7]=1
+    PUT/UPDATE  total=  625023  hit=       0  miss=  625023  chain_avg= 0.57
+               depth:  [ 0]=369647  [ 1]=176172  [ 2]=60031  [ 3]=15477  [ 4]=3106  [ 5]=517  [ 6]=65  [ 7]=7  [ 8]=1
+    GET         total=  622865  hit=  622865  miss=       0  chain_avg= 1.83
+               depth:  [ 1]=162274  [ 2]=409548  [ 3]=48115  [ 4]=2257  [ 5]=627  [ 6]=44
+    PUT/UPDATE  total=  624873  hit=       0  miss=  624873  chain_avg= 0.57
+               depth:  [ 0]=369578  [ 1]=176382  [ 2]=60036  [ 3]=15252  [ 4]=3081  [ 5]=480  [ 6]=57  [ 7]=6  [ 8]=1
+    GET         total=  713647  hit=  713647  miss=       0  chain_avg= 2.02
+               depth:  [ 1]=208612  [ 2]=296140  [ 3]=194803  [ 4]=13927  [ 5]=162  [ 6]=3
+    PUT/UPDATE  total=  624892  hit=       0  miss=  624892  chain_avg= 0.57
+               depth:  [ 0]=369744  [ 1]=176130  [ 2]=59952  [ 3]=15414  [ 4]=3093  [ 5]=498  [ 6]=54  [ 7]=7
+    GET         total=  643138  hit=  643138  miss=       0  chain_avg= 1.93
+               depth:  [ 1]=183547  [ 2]=342837  [ 3]=101565  [ 4]=10771  [ 5]=4303  [ 6]=115
+    PUT/UPDATE  total=  625023  hit=       0  miss=  625023  chain_avg= 0.57
+               depth:  [ 0]=369647  [ 1]=176172  [ 2]=60031  [ 3]=15477  [ 4]=3106  [ 5]=517  [ 6]=65  [ 7]=7  [ 8]=1
+    GET         total=  643566  hit=  643566  miss=       0  chain_avg= 1.78
+               depth:  [ 1]=233219  [ 2]=318481  [ 3]=90374  [ 4]=1184  [ 5]=230  [ 6]=77  [ 7]=1
+    PUT/UPDATE  total=  624804  hit=       0  miss=  624804  chain_avg= 0.57
+               depth:  [ 0]=369697  [ 1]=176266  [ 2]=59925  [ 3]=15332  [ 4]=3043  [ 5]=476  [ 6]=64  [ 7]=1
+    GET         total=  717054  hit=  717054  miss=       0  chain_avg= 2.03
+               depth:  [ 1]=208656  [ 2]=295802  [ 3]=198332  [ 4]=14102  [ 5]=161  [ 7]=1
+    PUT/UPDATE  total=  624892  hit=       0  miss=  624892  chain_avg= 0.57
+               depth:  [ 0]=369744  [ 1]=176130  [ 2]=59952  [ 3]=15414  [ 4]=3093  [ 5]=498  [ 6]=54  [ 7]=7
+    GET         total=  537331  hit=  537331  miss=       0  chain_avg= 1.84
+               depth:  [ 1]=181308  [ 2]=270737  [ 3]=77509  [ 4]=3083  [ 5]=4601  [ 6]=93
+    PUT/UPDATE  total=  625120  hit=       0  miss=  625120  chain_avg= 0.57
+               depth:  [ 0]=369779  [ 1]=176305  [ 2]=60098  [ 3]=15256  [ 4]=3079  [ 5]=524  [ 6]=68  [ 7]=11
+    GET         total=  644109  hit=  644109  miss=       0  chain_avg= 1.78
+               depth:  [ 1]=233591  [ 2]=317708  [ 3]=91331  [ 4]=1159  [ 5]=233  [ 6]=87
+    PUT/UPDATE  total=  624804  hit=       0  miss=  624804  chain_avg= 0.57
+               depth:  [ 0]=369697  [ 1]=176266  [ 2]=59925  [ 3]=15332  [ 4]=3043  [ 5]=476  [ 6]=64  [ 7]=1
+    GET         total=  656454  hit=  656454  miss=       0  chain_avg= 1.89
+               depth:  [ 1]=213047  [ 2]=344631  [ 3]=56008  [ 4]=42062  [ 5]=452  [ 6]=253  [ 7]=1
+    PUT/UPDATE  total=  624981  hit=       0  miss=  624981  chain_avg= 0.57
+               depth:  [ 0]=369993  [ 1]=176274  [ 2]=60023  [ 3]=15177  [ 4]=3003  [ 5]=455  [ 6]=53  [ 7]=3
+    GET         total=  538075  hit=  538075  miss=       0  chain_avg= 1.84
+               depth:  [ 1]=182579  [ 2]=270898  [ 3]=77002  [ 4]=3050  [ 5]=4479  [ 6]=66  [ 7]=1
+    PUT/UPDATE  total=  625120  hit=       0  miss=  625120  chain_avg= 0.57
+               depth:  [ 0]=369779  [ 1]=176305  [ 2]=60098  [ 3]=15256  [ 4]=3079  [ 5]=524  [ 6]=68  [ 7]=11
+--- Poller (scan ResponseQueues, send UINTR) ---
+  scan_rounds:  89759434
+  uintrs_sent:  4
+  rounds/uintr: 22439858.5
+
+==================================
+

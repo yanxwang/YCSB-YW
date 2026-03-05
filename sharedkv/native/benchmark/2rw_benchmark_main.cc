@@ -55,6 +55,8 @@ static void print_usage(const char* prog) {
         "  --queue-depth       N    SPSC queue depth (power-of-2)  (default: 1024)\n"
         "  --mem-gb            N    CXL memory size in GB          (default: 16)\n"
         "  --worker-cpu        N    First CPU for Worker threads   (default: 1+s)\n"
+        "  --dequeue-batch     N    SN dequeue batch size per queue  (default: 8)\n"
+        "  --read-ack-batch    N    SN flush read_idx interval       (default: 32)\n"
         "  --local-workerring       WorkerRing on local DRAM instead of CXL\n"
         "  --stats                  Per-op chain traversal stats + bucket distribution\n"
         "  --counters               Pipeline-wide enqueue/dequeue counters per role\n"
@@ -174,6 +176,10 @@ int main(int argc, char** argv) {
             cfg.memory_size = static_cast<uint64_t>(next_int("--mem-gb")) << 30;
         } else if (strcmp(argv[i], "--worker-cpu") == 0) {
             cfg.worker_cpu_start = next_int("--worker-cpu");
+        } else if (strcmp(argv[i], "--dequeue-batch") == 0) {
+            cfg.dequeue_batch = next_u32("--dequeue-batch");
+        } else if (strcmp(argv[i], "--read-ack-batch") == 0) {
+            cfg.read_ack_batch = next_u32("--read-ack-batch");
         } else if (strcmp(argv[i], "--local-workerring") == 0) {
             cfg.local_workerring = true;
         } else if (strcmp(argv[i], "--stats") == 0) {
@@ -247,6 +253,8 @@ int main(int argc, char** argv) {
            cpu_start + static_cast<int>(n) - 1);
     printf("    RespTh:     CPU %d..%d\n", cpu_start + static_cast<int>(n),
            cpu_start + static_cast<int>(2 * n) - 1);
+    printf("  dequeue_batch:         %u\n",   cfg.dequeue_batch);
+    printf("  read_ack_batch:        %u\n",   cfg.read_ack_batch);
     printf("  local_workerring:      %s\n",
            cfg.local_workerring ? "yes (DRAM)" : "no (CXL)");
     printf("  stats:                 %s\n",

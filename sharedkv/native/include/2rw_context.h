@@ -55,6 +55,8 @@ struct TwoRWConfig {
     bool     stats_enabled      = false;      // per-op chain traversal stats + bucket scan
     bool     verbose            = false;      // per-thread lifecycle messages + client summary
     bool     counters_enabled   = false;      // pipeline-wide enqueue/dequeue counters per role
+    uint32_t dequeue_batch      = 8;          // SN: items pulled per RequestQueue per round-robin step
+    uint32_t read_ack_batch     = 32;         // SN: flush read_idx every N dequeues per queue
 
     // ---- Parsing ----
 
@@ -212,6 +214,8 @@ struct SyncThreadState {
     uint32_t num_synchronizers; // s: total synchronizers
     uint32_t workers_base;      // first global worker_id managed by this SN
     uint32_t workers_count;     // number of workers managed by this SN (m/s)
+    uint32_t dequeue_batch;     // items pulled per RequestQueue per round-robin step
+    uint32_t read_ack_batch;    // flush read_idx every N dequeues per queue
 
     // GSN — on its own cache line, written by this SN every op.
     alignas(64) std::atomic<uint64_t> gsn{0};

@@ -380,6 +380,8 @@ TwoRWContext* two_rw_init(const TwoRWConfig& cfg) {
         ss->num_synchronizers    = s;
         ss->workers_base         = w_base;
         ss->workers_count        = wps;
+        ss->dequeue_batch        = cfg.dequeue_batch;
+        ss->read_ack_batch       = cfg.read_ack_batch;
         // GSN for SN_k starts at k (interleaved: k, k+s, k+2s, ...)
         ss->gsn.store(k, std::memory_order_relaxed);
 

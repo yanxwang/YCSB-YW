@@ -1,0 +1,76 @@
+SharedKV Architecture Specification: Unified Block Storage & Dynamic Membership
+Version: 1.6 (Full Integration)
+Status: Final Implementation Specification for High-Performance CXL KV-Store
+
+===============================================================================
+1. 物理布局：统一分块 (Unified Block, UB)
+===============================================================================
+取消原有的 Request Pool 与 Data Region 的边界，整个 CXL 内存为一个统一的块池。
+- 物理单元：2KB 固定大小分块 (Block)。
+- 寻址：使用 32 位 block_id。物理地址 = Base_CXL + (block_id << 11)。
+- 零拷贝：Block 从请求进入到持久化存储，物理位置永不改变。
+
+[数据结构]
+struct alignas(64) UnifiedBlock {
+    // --- Header (64B) ---
+    uint32_t next_block_id;   // 哈希冲突链或大对象链接指针
+    uint32_t key_hash;        // 预计算哈希值（用于快速指纹比对）
+    uint16_t key_len;
+    uint32_t val_len;
+    uint8_t  is_external;     // 1: 溢出至 Spillover Area (>2KB)
+    uint64_t gsn;             // 全局序列号
+    uint64_t t0, t1, t2, t3;  // 全链路性能监控时间戳
+    char     reserved[23];    
+
+    // --- Data Area ---
+    char data[];              // Key + Value (内联模式)
+};
+
+===============================================================================
+2. 动态成员管理：系统清单 (System Manifest)
+===============================================================================
+系统不再通过命令行静态指定线程数，而是通过 CXL 内存中的“真理来源”进行动态发现。
+
+- 注册表位置：CXL 内存起始位置 (Manifest Area)。
+- 线程描述符 (ThreadDescriptor)：
+  存储 thread_id, status (JOINING, ALIVE, LEAVING, DEAD), 
+  以及队列的 CXL Offsets (req_queue_off, resp_queue_off)。
+- 路由机制：
+  1. Synchronizer 监测 Manifest 中 ALIVE 状态的 Worker。
+  2. 使用“一致性哈希 (Consistent Hashing)”将 Key 空间映射到 Worker 虚拟节点。
+  3. 当 Worker 加入/退出时，仅受影响的哈希环片段进行数据索引迁移（由于 Block 统一，无需物理移动数据）。
+
+===============================================================================
+3. 分级 ID 管理：块所有权交换 (Ownership Swap)
+===============================================================================
+为了消除对全局分配器的竞争，采用批发-零售模型。
+
+1. 全局池 (Global Reservoir)：基于位图 (Bitmap) 管理所有 block_id。
+2. 本地缓存 (Local Cache)：Request Thread 私有的 LIFO 栈 (容量 1024)。
+   - 批发：栈空时，向全局池原子申请 256 个 ID。
+   - 零售：请求时弹出一个 ID (id_new)。
+3. 交换协议 (Swap Protocol)：
+   - Worker 接收 id_new，在哈希链表中找到旧版本的 id_old。
+   - Worker 将 id_new 挂入索引，并在 Response 中传回 id_old。
+   - Response Thread 将 id_old 压回该 Client 的 Local Cache，实现循环。
+
+===============================================================================
+4. 超长 Value 处理：溢出路径 (Spillover Path)
+===============================================================================
+- 阈值：Value > 1856 字节。
+- 处理：
+  1. Request Thread 在 Spillover Region 申请变长内存。
+  2. UnifiedBlock 设置 is_external = 1，其数据区存储 64 位外部偏移量。
+  3. Worker 仅操作 UnifiedBlock 索引，不触碰外部大数据，保持控制平面高效。
+- 回收：当 id_old 被回收且 is_external == 1 时，同步释放外部内存。
+
+===============================================================================
+5. 性能优化要点 (CXL-Friendly)
+===============================================================================
+- 指纹过滤 (Fingerprinting)：在遍历链表前，先比对 UnifiedBlock 里的 key_hash，减少无效的 CXL 内存读取。
+- 稀疏索引 (Sparse Index)：增加 Bucket 数量使负载因子 L < 0.2，以空间换延迟。
+- 内存屏障 (Barriers)：
+  - 写：填充 Block 后执行 _mm_sfence()，再更新指针。
+  - 读：遍历链表前执行 _mm_lfence()。
+- 对齐寻址：使用位移指令 (Shift) 替代乘法进行 block_id 到物理地址的转换。
+===============================================================================
