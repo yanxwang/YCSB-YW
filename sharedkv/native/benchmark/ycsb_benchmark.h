@@ -89,8 +89,10 @@ int load_ycsb_workload(const char* filename, std::vector<YCSBOperation>& operati
 // Generate YCSB-style value (10 fields, 100 bytes each = 1KB)
 std::string generate_ycsb_value(int num_fields = 10, int field_size = 100);
 
-// Parse workload file names from workload name
-WorkloadFileNames get_workload_files(const char* workload_name);
+// Parse workload file names from workload name.
+// workload_dir: directory containing workload files (default: "workloads")
+WorkloadFileNames get_workload_files(const char* workload_name,
+                                     const char* workload_dir = "workloads");
 
 // ============================================================================
 // Benchmark Execution Functions

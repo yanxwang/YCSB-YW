@@ -95,10 +95,14 @@ void print_benchmark_stats(const char* phase_name,
 // Workload Loading
 // ============================================================================
 
-WorkloadFileNames get_workload_files(const char* workload_name) {
+WorkloadFileNames get_workload_files(const char* workload_name,
+                                     const char* workload_dir) {
     WorkloadFileNames files;
-    files.load_file = std::string("workloads/") + workload_name + "_load.txt";
-    files.trans_file = std::string("workloads/") + workload_name + "_trans.txt";
+    std::string dir = workload_dir;
+    // Ensure trailing slash
+    if (!dir.empty() && dir.back() != '/') dir += '/';
+    files.load_file  = dir + workload_name + "_load.txt";
+    files.trans_file = dir + workload_name + "_trans.txt";
     return files;
 }
 

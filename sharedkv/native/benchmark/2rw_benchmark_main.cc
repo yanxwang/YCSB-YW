@@ -8,10 +8,10 @@
 //   CPU 0                         : Poller
 //   CPU 1 .. s                    : SN_0 .. SN_{s-1}  (s = num_synchronizers)
 //   CPU worker_cpu .. +m-1        : Workers      (default: 1+s)
-//   CPU cpu_start .. +n-1         : Request Threads  (one per client, dedicated)
-//   CPU cpu_start+n .. +2n-1      : Response Threads (one per client, dedicated)
+//   CPU client_cpu_start .. +n-1         : Request Threads  (one per client, dedicated)
+//   CPU client_cpu_start+n .. +2n-1      : Response Threads (one per client, dedicated)
 //
-// Recommended: cpu_start >= worker_cpu + num_workers
+// Recommended: client_cpu_start >= worker_cpu + num_workers
 // ============================================================================
 
 #include "2rw_benchmark.h"
@@ -26,13 +26,96 @@
 using namespace TwoRW;
 
 // ============================================================================
-// Global Stop Flag
+// Global Stop Flag + Pipeline Diagnostics
 // ============================================================================
 
 static volatile bool g_should_stop = false;
+static TwoRWContext* g_diag_ctx = nullptr;   // set after init, used by SIGUSR1
 
 static void signal_handler(int) {
     g_should_stop = true;
+}
+
+// SIGUSR1 handler: dump pipeline queue depths to stderr (async-signal-safe enough)
+static void diag_handler(int) {
+    TwoRWContext* ctx = g_diag_ctx;
+    if (!ctx) return;
+    const auto& cfg = ctx->config;
+    const uint32_t n = cfg.num_clients;
+    const uint32_t m = cfg.num_workers;
+    const uint32_t s = cfg.num_synchronizers;
+
+    fprintf(stderr, "\n===== PIPELINE DIAGNOSTIC (SIGUSR1) =====\n");
+
+    // 1. RequestQueues: [client × SN] — read from CXL directly
+    fprintf(stderr, "RequestQueues [n=%u × s=%u]:\n", n, s);
+    for (uint32_t c = 0; c < n; c++) {
+        for (uint32_t k = 0; k < s; k++) {
+            auto* q = ctx->layout.request_sub_queue(ctx->cxl_base, c, k);
+            uint64_t w = q->write_idx, r = q->read_idx;
+            if (w - r > 0)
+                fprintf(stderr, "  ReqQ[c%u,sn%u]: fill=%lu (w=%lu r=%lu)\n",
+                        c, k, w - r, w, r);
+        }
+    }
+
+    // 2. WorkerRings
+    fprintf(stderr, "WorkerRings [m=%u]:\n", m);
+    for (uint32_t i = 0; i < m; i++) {
+        if (cfg.local_workerring && ctx->local_rings) {
+            auto& ring = ctx->local_rings[i];
+            uint64_t w = ring.write_idx.load(std::memory_order_relaxed);
+            uint64_t r = ring.read_idx.load(std::memory_order_relaxed);
+            fprintf(stderr, "  WR[%u]: fill=%lu (w=%lu r=%lu)%s\n",
+                    i, w - r, w, r, (w - r >= QUEUE_CAP) ? " FULL" : "");
+        } else {
+            auto* q = ctx->layout.worker_ring(ctx->cxl_base, i);
+            uint64_t w = q->write_idx, r = q->read_idx;
+            fprintf(stderr, "  WR[%u]: fill=%lu (w=%lu r=%lu)%s\n",
+                    i, w - r, w, r, (w - r >= QUEUE_CAP) ? " FULL" : "");
+        }
+    }
+
+    // 3. ResponseQueues: [client × worker]
+    fprintf(stderr, "ResponseQueues [n=%u × m=%u]:\n", n, m);
+    for (uint32_t c = 0; c < n; c++) {
+        for (uint32_t i = 0; i < m; i++) {
+            auto* q = ctx->layout.response_queue(ctx->cxl_base, c, i);
+            uint64_t w = q->write_idx, r = q->read_idx;
+            if (w - r > 0)
+                fprintf(stderr, "  RespQ[c%u,w%u]: fill=%lu (w=%lu r=%lu)%s\n",
+                        c, i, w - r, w, r, (w - r >= QUEUE_CAP) ? " FULL" : "");
+        }
+    }
+
+    // 4. FreeBlockQueues
+    fprintf(stderr, "FreeBlockQueues [n=%u]:\n", n);
+    for (uint32_t c = 0; c < n; c++) {
+        auto& q = ctx->free_block_queues[c];
+        uint32_t w = q.write_idx, r = q.read_idx;
+        fprintf(stderr, "  FBQ[c%u]: fill=%u (w=%u r=%u)%s\n",
+                c, w - r, w, r, (w - r >= QUEUE_CAP) ? " FULL" : "");
+    }
+
+    // 5. LocalBlockCache
+    fprintf(stderr, "LocalBlockCaches [n=%u]:\n", n);
+    for (uint32_t c = 0; c < n; c++) {
+        fprintf(stderr, "  Cache[c%u]: top=%u\n",
+                c, ctx->local_block_caches[c].top);
+    }
+
+    // 6. Bitmap summary: count free bits in a sample of words
+    {
+        volatile uint64_t* bmap = ctx->block_bitmap;
+        uint32_t total_words = ctx->block_bitmap_words;
+        uint64_t free_bits = 0;
+        for (uint32_t w = 0; w < total_words; w++)
+            free_bits += __builtin_popcountll(bmap[w]);
+        fprintf(stderr, "Bitmap: free=%lu / total=%u\n",
+                free_bits, ctx->layout.total_blocks);
+    }
+
+    fprintf(stderr, "===== END DIAGNOSTIC =====\n\n");
 }
 
 // ============================================================================
@@ -45,6 +128,7 @@ static void print_usage(const char* prog) {
         "\n"
         "Required:\n"
         "  --workload <name>           Workload name (workloada / workloadb / workloadc)\n"
+        "  --workload-dir <path>       Directory containing workload files (default: workloads/)\n"
         "\n"
         "2RW Architecture:\n"
         "  --num-clients       N    Request/Response thread pairs  (default: 4)\n"
@@ -54,7 +138,7 @@ static void print_usage(const char* prog) {
         "  --num-buckets       N    Hash table buckets (power-of-2)(default: 1048576)\n"
         "  --queue-depth       N    SPSC queue depth (power-of-2)  (default: 1024)\n"
         "  --mem-gb            N    CXL memory size in GB          (default: 16)\n"
-        "  --worker-cpu        N    First CPU for Worker threads   (default: 2+s)\n"
+        "  --worker-cpu-start  N    First CPU for Worker threads   (default: 2+s)\n"
         "  --dequeue-batch     N    SN dequeue batch size per queue  (default: 8)\n"
         "  --read-ack-batch    N    SN flush read_idx interval       (default: 32)\n"
         "  --local-workerring       WorkerRing on local DRAM instead of CXL\n"
@@ -62,17 +146,29 @@ static void print_usage(const char* prog) {
         "  --stats                  Per-op chain traversal stats + bucket distribution\n"
         "  --counters               Pipeline-wide enqueue/dequeue counters per role\n"
         "  --verbose                Per-thread lifecycle messages + client summary\n"
+        "  --worker-per-sn <list>   Comma-separated workers per SN (e.g. \"6,4,6,4\")\n"
+        "\n"
+        "Multi-machine:\n"
+        "  --node-id N              This node's ID (0 = master)     (default: 0)\n"
+        "  --num-nodes N            Total machines in cluster        (default: 1)\n"
+        "  --cxl-device <path>      CXL DAX device (e.g. /dev/dax0.0)\n"
+        "  --global-sn-start N      First global SN index for this node\n"
+        "  --global-sn-count N      Number of SNs on this node\n"
+        "  --global-worker-start N  First global worker index for this node\n"
+        "  --global-worker-count N  Number of workers on this node\n"
+        "  --global-client-start N  First global client index for this node\n"
+        "  --global-client-count N  Number of clients on this node\n"
         "\n"
         "Benchmark:\n"
         "  --numa <numa>           NUMA node for CXL memory       (default: 2)\n"
-        "  --clients-start <cpu>            Starting CPU for client threads (default: 14)\n"
+        "  --client-cpu-start <cpu>         Starting CPU for client threads (default: 14)\n"
         "  --duration <seconds>        Throughput test duration        (default: 10)\n"
         "  --latency                  Latency mode (fixed ops, not timed)\n"
-        "  --operations-per-client <ops>            Ops per client in latency mode  (default: 100000)\n"
+        "  --operations-per-client <ops>            Ops per client in latency mode  (default: auto = trans_ops / num_clients)\n"
         "\n"
         "Example:\n"
-        "  %s --workload workloadc --num-clients 4 --num-workers 8 --worker-cpu 2 --clients-start 18 --duration 30\n"
-        "  %s --workload workloada --num-clients 4 --num-workers 8 --worker-cpu 2 --clients-start 18 --latency --operations-per-client 100000\n",
+        "  %s --workload workloadc --num-clients 4 --num-workers 8 --worker-cpu-start 2 --client-cpu-start 18 --duration 30\n"
+        "  %s --workload workloada --num-clients 4 --num-workers 8 --worker-cpu-start 2 --client-cpu-start 18 --latency --operations-per-client 100000\n",
         prog, prog, prog);
 }
 
@@ -116,13 +212,15 @@ static void print_phase_result(const char* phase, const PhaseResult& r,
 int main(int argc, char** argv) {
     signal(SIGINT,  signal_handler);
     signal(SIGTERM, signal_handler);
+    signal(SIGUSR1, diag_handler);
 
     // ---- Defaults ----
     const char* workload_name  = nullptr;
-    int         cpu_start      = 14;
+    const char* workload_dir   = "workloads";
+    int         client_cpu_start = 14;
     int         duration_sec   = 10;
     bool        measure_latency = false;
-    uint32_t    ops_per_client  = 100000;
+    uint32_t    ops_per_client  = 0;          // 0 = auto: trans_ops.size() / num_clients
 
     // 2RW config defaults
     TwoRWConfig cfg;
@@ -151,10 +249,12 @@ int main(int argc, char** argv) {
 
         if (strcmp(argv[i], "--workload") == 0 && i + 1 < argc) {
             workload_name = argv[++i];
+        } else if (strcmp(argv[i], "--workload-dir") == 0 && i + 1 < argc) {
+            workload_dir = argv[++i];
         } else if (strcmp(argv[i], "--numa") == 0) {
             cfg.numa_node = next_int("--numa");
-        } else if (strcmp(argv[i], "--clients-start") == 0) {
-            cpu_start = next_int("--clients-start");
+        } else if (strcmp(argv[i], "--client-cpu-start") == 0) {
+            client_cpu_start = next_int("--client-cpu-start");
         } else if (strcmp(argv[i], "--duration") == 0) {
             duration_sec = next_int("--duration");
         } else if (strcmp(argv[i], "--latency") == 0) {
@@ -175,8 +275,8 @@ int main(int argc, char** argv) {
             cfg.queue_depth = next_u32("--queue-depth");
         } else if (strcmp(argv[i], "--mem-gb") == 0) {
             cfg.memory_size = static_cast<uint64_t>(next_int("--mem-gb")) << 30;
-        } else if (strcmp(argv[i], "--worker-cpu") == 0) {
-            cfg.worker_cpu_start = next_int("--worker-cpu");
+        } else if (strcmp(argv[i], "--worker-cpu-start") == 0) {
+            cfg.worker_cpu_start = next_int("--worker-cpu-start");
         } else if (strcmp(argv[i], "--dequeue-batch") == 0) {
             cfg.dequeue_batch = next_u32("--dequeue-batch");
         } else if (strcmp(argv[i], "--read-ack-batch") == 0) {
@@ -192,6 +292,37 @@ int main(int argc, char** argv) {
             cfg.counters_enabled = true;
         } else if (strcmp(argv[i], "--verbose") == 0) {
             cfg.verbose = true;
+        // ---- Multi-machine flags ----
+        } else if (strcmp(argv[i], "--node-id") == 0) {
+            cfg.node_id = next_u32("--node-id");
+        } else if (strcmp(argv[i], "--num-nodes") == 0) {
+            cfg.num_nodes = next_u32("--num-nodes");
+        } else if (strcmp(argv[i], "--cxl-device") == 0) {
+            if (i + 1 >= argc) { fprintf(stderr, "ERROR: --cxl-device requires an argument\n"); exit(1); }
+            cfg.cxl_device_path = argv[++i];
+        } else if (strcmp(argv[i], "--global-sn-start") == 0) {
+            cfg.global_sn_start = next_u32("--global-sn-start");
+        } else if (strcmp(argv[i], "--global-sn-count") == 0) {
+            cfg.global_sn_count = next_u32("--global-sn-count");
+        } else if (strcmp(argv[i], "--global-worker-start") == 0) {
+            cfg.global_worker_start = next_u32("--global-worker-start");
+        } else if (strcmp(argv[i], "--global-worker-count") == 0) {
+            cfg.global_worker_count = next_u32("--global-worker-count");
+        } else if (strcmp(argv[i], "--global-client-start") == 0) {
+            cfg.global_client_start = next_u32("--global-client-start");
+        } else if (strcmp(argv[i], "--global-client-count") == 0) {
+            cfg.global_client_count = next_u32("--global-client-count");
+        } else if (strcmp(argv[i], "--worker-per-sn") == 0) {
+            if (i + 1 >= argc) { fprintf(stderr, "ERROR: --worker-per-sn requires an argument\n"); exit(1); }
+            cfg.worker_per_sn.clear();
+            const char* p = argv[++i];
+            while (*p) {
+                char* end;
+                uint32_t v = static_cast<uint32_t>(strtoul(p, &end, 10));
+                cfg.worker_per_sn.push_back(v);
+                if (*end == ',') end++;
+                p = end;
+            }
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             print_usage(argv[0]);
             return 0;
@@ -202,24 +333,34 @@ int main(int argc, char** argv) {
         }
     }
 
+    // Multi-machine: set cluster_config_path to non-empty when num_nodes > 1
+    // (we use CLI flags directly instead of a config file for now)
+    if (cfg.num_nodes > 1) {
+        cfg.cluster_config_path = "cli";   // non-empty = multi-node mode
+    }
+
     if (workload_name == nullptr) {
         fprintf(stderr, "ERROR: -w <workload> is required\n\n");
         print_usage(argv[0]);
         return 1;
     }
 
-    const uint32_t n = cfg.num_clients;
-    const uint32_t m = cfg.num_workers;
-    const uint32_t s = cfg.num_synchronizers;
+    // Finalize ranges for local/global client counts
+    cfg.finalize_ranges();
 
-    // Effective worker CPU start (resolve -1 = auto: 1 + s)
+    const uint32_t n = cfg.num_clients;       // global
+    const uint32_t m = cfg.num_workers;        // global
+    const uint32_t s = cfg.num_synchronizers;  // global
+    const uint32_t local_n = cfg.global_client_count; // local clients on this node
+
+    // Effective worker CPU start (resolve -1 = auto: 2 + local SN count)
     const int w_cpu = (cfg.worker_cpu_start < 0)
-                      ? static_cast<int>(1 + s)
+                      ? static_cast<int>(2 + cfg.global_sn_count)
                       : cfg.worker_cpu_start;
 
     // ---- CPU Layout Validation ----
     int worker_max_cpu = w_cpu + static_cast<int>(m) - 1;
-    int bench_min_cpu  = cpu_start;
+    int bench_min_cpu  = client_cpu_start;
     if (bench_min_cpu <= worker_max_cpu || w_cpu <= static_cast<int>(s)) {
         fprintf(stderr,
             "WARNING: Possible CPU overlap detected.\n"
@@ -227,11 +368,11 @@ int main(int argc, char** argv) {
             "  SNs:      CPU 1..%u\n"
             "  Workers:  CPU %d..%d\n"
             "  Clients:  CPU %d..%d (ReqTh) / %d..%d (RespTh)\n"
-            "  Recommended: -s %d or higher, --worker-cpu >= %u.\n",
+            "  Recommended: -s %d or higher, --worker-cpu-start >= %u.\n",
             s,
             w_cpu, worker_max_cpu,
-            cpu_start, cpu_start + (int)n - 1,
-            cpu_start + (int)n, cpu_start + (int)(2*n) - 1,
+            client_cpu_start, client_cpu_start + (int)n - 1,
+            client_cpu_start + (int)n, client_cpu_start + (int)(2*n) - 1,
             worker_max_cpu + 1, s + 1);
     }
 
@@ -253,10 +394,10 @@ int main(int argc, char** argv) {
     for (uint32_t k = 0; k < s; k++)
         printf("    SN%u:        CPU %u\n", k, k + 1);
     printf("    Workers:    CPU %d..%d\n", w_cpu, w_cpu + (int)m - 1);
-    printf("    ReqTh:      CPU %d..%d\n", cpu_start,
-           cpu_start + static_cast<int>(n) - 1);
-    printf("    RespTh:     CPU %d..%d\n", cpu_start + static_cast<int>(n),
-           cpu_start + static_cast<int>(2 * n) - 1);
+    printf("    ReqTh:      CPU %d..%d\n", client_cpu_start,
+           client_cpu_start + static_cast<int>(n) - 1);
+    printf("    RespTh:     CPU %d..%d\n", client_cpu_start + static_cast<int>(n),
+           client_cpu_start + static_cast<int>(2 * n) - 1);
     printf("  dequeue_batch:         %u\n",   cfg.dequeue_batch);
     printf("  read_ack_batch:        %u\n",   cfg.read_ack_batch);
     printf("  local_workerring:      %s\n",
@@ -268,15 +409,18 @@ int main(int argc, char** argv) {
     printf("  verbose:               %s\n",
            cfg.verbose ? "enabled" : "disabled");
     if (measure_latency) {
-        printf("  Mode:         Latency  (%u ops/client, %u total)\n",
-               ops_per_client, ops_per_client * n);
+        if (ops_per_client > 0)
+            printf("  Mode:         Latency  (%u ops/client, %u total)\n",
+                   ops_per_client, ops_per_client * n);
+        else
+            printf("  Mode:         Latency  (auto ops/client from workload)\n");
     } else {
         printf("  Mode:         Throughput (%d seconds)\n", duration_sec);
     }
     printf("==============================================\n\n");
 
     // ---- Load Workload Files ----
-    WorkloadFileNames wf = get_workload_files(workload_name);
+    WorkloadFileNames wf = get_workload_files(workload_name, workload_dir);
     std::vector<YCSBOperation> load_ops, trans_ops;
 
     if (cfg.verbose) printf("[Main] Loading workload files...\n");
@@ -292,20 +436,42 @@ int main(int argc, char** argv) {
         printf("[Main] load_ops=%zu  trans_ops=%zu\n\n",
                load_ops.size(), trans_ops.size());
 
+    // Auto-compute ops_per_client from workload size if not explicitly set
+    if (ops_per_client == 0) {
+        ops_per_client = static_cast<uint32_t>(trans_ops.size()) / n;
+        if (ops_per_client == 0) ops_per_client = 1;
+        if (measure_latency)
+            printf("  ops_per_client (auto): %u  (%zu ops / %u clients)\n",
+                   ops_per_client, trans_ops.size(), n);
+    }
+
     // ---- Estimate TSC Frequency ----
     uint64_t tsc_mhz = estimate_tsc_mhz();
     printf("  TSC frequency: ~%lu MHz\n\n", tsc_mhz);
 
     // ---- Init 2RW Context ----
     if (cfg.verbose) printf("[Main] Initializing 2RW context...\n");
-    TwoRWContext* ctx = two_rw_init(cfg);
-    if (!ctx) {
-        fprintf(stderr, "ERROR: two_rw_init failed\n");
-        return 1;
+    TwoRWContext* ctx = nullptr;
+    if (cfg.is_multi_node()) {
+        if (cfg.is_master()) {
+            ctx = two_rw_master_init(cfg);
+            if (!ctx) { fprintf(stderr, "ERROR: two_rw_master_init failed\n"); return 1; }
+        } else {
+            ctx = two_rw_slave_attach(cfg);
+            if (!ctx) { fprintf(stderr, "ERROR: two_rw_slave_attach failed\n"); return 1; }
+        }
+    } else {
+        ctx = two_rw_init(cfg);
+        if (!ctx) { fprintf(stderr, "ERROR: two_rw_init failed\n"); return 1; }
     }
+
+    g_diag_ctx = ctx;   // enable SIGUSR1 pipeline dump
 
     if (cfg.verbose) printf("[Main] Starting core threads (Sync, Poller, Workers)...\n");
     two_rw_start_threads(ctx);
+
+    // Multi-machine: wait for all nodes before starting workload
+    two_rw_node_barrier(ctx);
     printf("\n");
 
     // ---- LOAD PHASE ----
@@ -313,11 +479,12 @@ int main(int argc, char** argv) {
     {
         // Divide load ops evenly; each client handles a slice sequentially.
         // Use fixed-ops mode (not throughput), no latency collection.
+        // ops_per_c is per LOCAL client, but slice is computed from global n.
         uint32_t ops_per_c = static_cast<uint32_t>(load_ops.size()) / n;
         if (ops_per_c == 0) ops_per_c = 1;
 
         PhaseResult lr = run_2rw_phase(
-            ctx, load_ops, n, cpu_start,
+            ctx, load_ops, local_n, cfg.global_client_start, client_cpu_start,
             /*throughput=*/false, /*duration=*/0,
             ops_per_c, /*measure_latency=*/false);
 
@@ -338,7 +505,7 @@ int main(int argc, char** argv) {
     printf("[Main] ===== TRANSACTION PHASE =====\n");
     {
         PhaseResult tr = run_2rw_phase(
-            ctx, trans_ops, n, cpu_start,
+            ctx, trans_ops, local_n, cfg.global_client_start, client_cpu_start,
             /*throughput=*/!measure_latency,
             duration_sec,
             ops_per_client,

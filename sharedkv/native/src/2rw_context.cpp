@@ -7,7 +7,11 @@
 #include "uintr_threading.h"
 
 #include <sys/mman.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 #include <unistd.h>
+#include <cerrno>
 #include <cstring>
 #include <cstdio>
 #include <cassert>
@@ -96,10 +100,36 @@ static void init_cxl_memory(void* base, const TwoRWLayout& L,
     hdr->slots_per_client = cfg.slots_per_client;
     hdr->num_buckets      = cfg.num_buckets;
     hdr->queue_depth      = cfg.queue_depth;
+    hdr->num_synchronizers = cfg.num_synchronizers;
     hdr->total_size       = L.total_size;
+    hdr->num_nodes        = cfg.num_nodes;
+    hdr->ready_flag       = 0;          // set to HEADER_READY after init completes
+    hdr->global_stop_flag = 0;
 
-    // Mark GlobalIDMap block 0 as reserved (sentinel; never allocated)
-    L.globalidmap(base)[0] |= 0x01;
+    // Initialize CXL Bitmap: bit=1 → FREE, bit=0 → IN-USE.
+    // Start with all blocks free, then mark pre-allocated and sentinel as in-use.
+    {
+        uint64_t* bmap = reinterpret_cast<uint64_t*>(L.globalidmap(base));
+        uint32_t total_words = (L.total_blocks + 63) / 64;
+
+        // All blocks free
+        memset(bmap, 0xFF, total_words * sizeof(uint64_t));
+
+        // Block 0 reserved (sentinel)
+        bmap[0] &= ~1ULL;
+
+        // Pre-allocated blocks [1 .. n*slots_per_client] → in-use
+        uint32_t pre_alloc_end = cfg.num_clients * cfg.slots_per_client;
+        for (uint32_t id = 1; id <= pre_alloc_end; id++) {
+            bmap[id / 64] &= ~(1ULL << (id % 64));
+        }
+
+        // Bits beyond total_blocks in last word → mark invalid (in-use)
+        uint32_t tail_bits = L.total_blocks % 64;
+        if (tail_bits != 0) {
+            bmap[total_words - 1] &= (1ULL << tail_bits) - 1;
+        }
+    }
 
     // Init RequestQueues: n_clients * n_synchronizers queues
     const uint32_t s = cfg.num_synchronizers;
@@ -121,6 +151,8 @@ static void init_cxl_memory(void* base, const TwoRWLayout& L,
         }
     }
 
+    // Signal CXL memory is fully initialized (multi-machine: worker nodes spin on this)
+    hdr->ready_flag = HEADER_READY;
     _mm_sfence();
     fprintf(stderr, "[2RW] CXL memory initialized. Layout:\n");
     L.print();
@@ -152,10 +184,37 @@ static void verify_numa_node(const void* ptr, int expected_node, const char* lab
 }
 
 // ============================================================================
-// two_rw_init
+// CXL DAX Device Mmap (multi-machine)
 // ============================================================================
 
-TwoRWContext* two_rw_init(const TwoRWConfig& cfg) {
+static void* mmap_cxl_device(const char* device_path, uint64_t size) {
+    int fd = open(device_path, O_RDWR);
+    if (fd < 0) {
+        fprintf(stderr, "[2RW] ERROR: cannot open CXL device '%s': %s\n",
+                device_path, strerror(errno));
+        return nullptr;
+    }
+
+    void* ptr = mmap(nullptr, size, PROT_READ | PROT_WRITE,
+                     MAP_SHARED | MAP_POPULATE, fd, 0);
+    close(fd);
+
+    if (ptr == MAP_FAILED) {
+        fprintf(stderr, "[2RW] ERROR: mmap CXL device '%s' (%lu MB) failed: %s\n",
+                device_path, (unsigned long)(size >> 20), strerror(errno));
+        return nullptr;
+    }
+
+    fprintf(stderr, "[2RW] CXL device '%s' mapped at %p (%lu MB)\n",
+            device_path, ptr, (unsigned long)(size >> 20));
+    return ptr;
+}
+
+// ============================================================================
+// Allocate TwoRWContext — common to all init paths
+// ============================================================================
+
+static TwoRWContext* allocate_context(const TwoRWConfig& cfg) {
     if (!cfg.validate()) {
         fprintf(stderr, "[2RW] Invalid config\n");
         cfg.print();
@@ -163,7 +222,6 @@ TwoRWContext* two_rw_init(const TwoRWConfig& cfg) {
     }
     cfg.print();
 
-    // ---- Allocate TwoRWContext on Poller's local NUMA node (CPU 0) ----
     const int cpu0_numa = (numa_available() >= 0) ? numa_node_of_cpu(0) : -1;
 
     fprintf(stderr,
@@ -184,28 +242,30 @@ TwoRWContext* two_rw_init(const TwoRWConfig& cfg) {
     }
 
     ctx->config = cfg;
+    ctx->config.finalize_ranges();   // fill sn_count/worker_count/client_count if 0
     ctx->layout = TwoRWLayout::calculate(
         cfg.num_clients, cfg.num_workers,
         cfg.slots_per_client, cfg.num_buckets,
         cfg.memory_size, cfg.num_synchronizers);
 
-    // Allocate CXL slab
-    ctx->cxl_base = allocate_cxl_slab(cfg.numa_node, cfg.memory_size);
-    if (!ctx->cxl_base) {
-        delete ctx;
-        return nullptr;
-    }
+    return ctx;
+}
 
-    // Set global TLS base for CXLPtr resolution
-    CXLBase::set(ctx->cxl_base);
+// ============================================================================
+// init_local_structures — common to all init paths
+//
+// Called after cxl_base and layout are set.  Allocates all local DRAM
+// structures: worker_to_sn, block caches, queue handles, thread states.
+// ============================================================================
 
-    // Initialize CXL memory
-    init_cxl_memory(ctx->cxl_base, ctx->layout, cfg);
-
+static void init_local_structures(TwoRWContext* ctx) {
+    const TwoRWConfig& cfg = ctx->config;
     const uint32_t n = cfg.num_clients;
     const uint32_t m = cfg.num_workers;
     const uint32_t s = cfg.num_synchronizers;
-    const uint32_t wps = m / s;  // workers per synchronizer
+
+    // Build worker_to_sn lookup table (supports both even and flexible allocation)
+    ctx->worker_to_sn = cfg.build_worker_to_sn();
 
     // ---- Allocate local (non-CXL) structures ----
 
@@ -222,18 +282,26 @@ TwoRWContext* two_rw_init(const TwoRWConfig& cfg) {
         auto& cache = ctx->local_block_caches[j];
         const uint32_t base_id = j * cfg.slots_per_client + 1;
         uint32_t k = 0;
-        // Fill local stack (capacity 1024)
-        for (; k < cfg.slots_per_client && cache.top < 1024; k++)
+        // Fill local stack (capacity LOCAL_CACHE_CAP)
+        for (; k < cfg.slots_per_client && cache.top < LOCAL_CACHE_CAP; k++)
             cache.stack[cache.top++] = base_id + k;
         // Overflow: push remaining into FreeBlockQueue
         for (; k < cfg.slots_per_client; k++)
             ctx->free_block_queues[j].push(base_id + k);
     }
 
-    // Global bump allocator starts after the pre-filled range.
-    // Handles new-key INSERT where block stays in hash table (not recycled).
-    ctx->block_alloc_next.store(n * cfg.slots_per_client + 1,
-                                std::memory_order_relaxed);
+    // Initialize bitmap pointer and scan hints
+    {
+        ctx->block_bitmap = reinterpret_cast<volatile uint64_t*>(
+            ctx->layout.globalidmap(ctx->cxl_base));
+        ctx->block_bitmap_words = (ctx->layout.total_blocks + 63) / 64;
+
+        // Spread scan_hints across bitmap to reduce contention
+        uint32_t total_words = ctx->block_bitmap_words;
+        for (uint32_t j = 0; j < n; j++) {
+            ctx->local_block_caches[j].scan_hint = (j * total_words) / n;
+        }
+    }
 
     // ---- Request thread producers: [n * s] ----
     // Written by Request Threads (not SNs) → regular new[], no NUMA needed
@@ -245,9 +313,9 @@ TwoRWContext* two_rw_init(const TwoRWConfig& cfg) {
         }
     }
 
-    // ---- Per-SN: req_consumers[n] and ring_producers[wps] ----
+    // ---- Per-SN: req_consumers[n] and ring_producers[w_cnt] ----
     // These are written by SN_k on every op → NUMA-allocate on SN_k's CPU node.
-    // CPU layout: SN_k runs on CPU (k+1).
+    // CPU layout: SN_k runs on CPU (k+2).
     ctx->sn_req_consumers   = new CXLSpscConsumer<KVRequest, QUEUE_CAP>*[s]{};
     ctx->sn_ring_producers  = new CXLSpscProducer<KVRequest, QUEUE_CAP>*[s]{};
     ctx->sn_req_con_is_numa  = new bool[s]{};
@@ -258,7 +326,8 @@ TwoRWContext* two_rw_init(const TwoRWConfig& cfg) {
     for (uint32_t k = 0; k < s; k++) {
         const int sn_cpu      = static_cast<int>(k + 2);  // SN_k on CPU k+2 (CPU 0-1 reserved for pollers)
         const int sn_numa     = (numa_available() >= 0) ? numa_node_of_cpu(sn_cpu) : -1;
-        const uint32_t w_base = k * wps;
+        const uint32_t w_base = cfg.workers_base_for_sn(ctx->worker_to_sn, k);
+        const uint32_t w_cnt  = cfg.workers_count_for_sn(ctx->worker_to_sn, k);
 
         // ---- req_consumers[n] for SN_k ----
         {
@@ -283,23 +352,23 @@ TwoRWContext* two_rw_init(const TwoRWConfig& cfg) {
               verify_numa_node(ctx->sn_req_consumers[k], sn_numa, lbl); }
         }
 
-        // ---- ring_producers[wps] for SN_k's CXL WorkerRings ----
+        // ---- ring_producers[w_cnt] for SN_k's CXL WorkerRings ----
         {
-            size_t sz = wps * sizeof(CXLSpscProducer<KVRequest, QUEUE_CAP>);
+            size_t sz = w_cnt * sizeof(CXLSpscProducer<KVRequest, QUEUE_CAP>);
             void* raw = try_numa_alloc(sz, sn_numa);
             if (raw) {
                 ctx->sn_ring_producers[k] =
                     static_cast<CXLSpscProducer<KVRequest, QUEUE_CAP>*>(raw);
-                for (uint32_t i = 0; i < wps; i++)
+                for (uint32_t i = 0; i < w_cnt; i++)
                     new (&ctx->sn_ring_producers[k][i])
                         CXLSpscProducer<KVRequest, QUEUE_CAP>();
                 ctx->sn_ring_prod_is_numa[k] = true;
             } else {
                 ctx->sn_ring_producers[k] =
-                    new CXLSpscProducer<KVRequest, QUEUE_CAP>[wps];
+                    new CXLSpscProducer<KVRequest, QUEUE_CAP>[w_cnt];
             }
-            // Attach to WorkerRings[w_base .. w_base+wps-1]
-            for (uint32_t i = 0; i < wps; i++)
+            // Attach to WorkerRings[w_base .. w_base+w_cnt-1]
+            for (uint32_t i = 0; i < w_cnt; i++)
                 ctx->sn_ring_producers[k][i].attach(
                     ctx->layout.worker_ring(ctx->cxl_base, w_base + i));
             { char lbl[32]; snprintf(lbl, sizeof(lbl), "sn_ring_producers[%u]", k);
@@ -361,7 +430,8 @@ TwoRWContext* two_rw_init(const TwoRWConfig& cfg) {
     for (uint32_t k = 0; k < s; k++) {
         const int sn_cpu  = static_cast<int>(k + 2);
         const int sn_numa = (numa_available() >= 0) ? numa_node_of_cpu(sn_cpu) : -1;
-        const uint32_t w_base = k * wps;
+        const uint32_t w_base = cfg.workers_base_for_sn(ctx->worker_to_sn, k);
+        const uint32_t w_cnt  = cfg.workers_count_for_sn(ctx->worker_to_sn, k);
 
         SyncThreadState* ss = nullptr;
         {
@@ -388,7 +458,7 @@ TwoRWContext* two_rw_init(const TwoRWConfig& cfg) {
         ss->sn_id                = k;
         ss->num_synchronizers    = s;
         ss->workers_base         = w_base;
-        ss->workers_count        = wps;
+        ss->workers_count        = w_cnt;
         ss->dequeue_batch        = cfg.dequeue_batch;
         ss->read_ack_batch       = cfg.read_ack_batch;
         // GSN for SN_k starts at k (interleaved: k, k+s, k+2s, ...)
@@ -408,7 +478,7 @@ TwoRWContext* two_rw_init(const TwoRWConfig& cfg) {
         ws.layout                = &ctx->layout;
         ws.cxl_base              = ctx->cxl_base;
         ws.stop_flag             = &ctx->stop_flag;
-        ws.sn_id_for_resp        = static_cast<uint8_t>(i / wps);
+        ws.sn_id_for_resp        = ctx->worker_to_sn[i];
         ws.ring_consumer         = &ctx->ring_consumers[i];
         ws.local_ring_consumer   = cfg.local_workerring
                                    ? &ctx->local_ring_consumers[i] : nullptr;
@@ -429,6 +499,8 @@ TwoRWContext* two_rw_init(const TwoRWConfig& cfg) {
         ctx->poller_state->stop_flag       = &ctx->stop_flag;
         ctx->poller_state->num_clients     = n;
         ctx->poller_state->num_workers     = m;
+        ctx->poller_state->global_client_start    = cfg.global_client_start;
+        ctx->poller_state->global_client_count    = cfg.global_client_count;
         ctx->poller_state->resp_uintr_fds  = ctx->resp_uintr_fds;
         ctx->poller_state->resp_fd_ready   = ctx->resp_fd_ready;
     }
@@ -440,12 +512,138 @@ TwoRWContext* two_rw_init(const TwoRWConfig& cfg) {
         ctx->worker_poller_state->cxl_base          = ctx->cxl_base;
         ctx->worker_poller_state->stop_flag         = &ctx->stop_flag;
         ctx->worker_poller_state->num_workers       = m;
+        ctx->worker_poller_state->global_worker_start      = cfg.global_worker_start;
+        ctx->worker_poller_state->global_worker_count      = cfg.global_worker_count;
         ctx->worker_poller_state->use_local_ring    = cfg.local_workerring;
         ctx->worker_poller_state->local_rings       = ctx->local_rings;
         ctx->worker_poller_state->worker_uintr_fds  = ctx->worker_uintr_fds;
         ctx->worker_poller_state->worker_fd_ready   = ctx->worker_fd_ready;
     }
+}
 
+// ============================================================================
+// two_rw_init — Single-machine init (backward compatible)
+// ============================================================================
+
+TwoRWContext* two_rw_init(const TwoRWConfig& cfg) {
+    TwoRWContext* ctx = allocate_context(cfg);
+    if (!ctx) return nullptr;
+
+    // Allocate CXL slab via mmap anonymous + mbind
+    ctx->cxl_base = allocate_cxl_slab(cfg.numa_node, cfg.memory_size);
+    if (!ctx->cxl_base) {
+        delete ctx;
+        return nullptr;
+    }
+
+    CXLBase::set(ctx->cxl_base);
+    init_cxl_memory(ctx->cxl_base, ctx->layout, cfg);
+    init_local_structures(ctx);
+    return ctx;
+}
+
+// ============================================================================
+// two_rw_master_init — Multi-machine master (node 0)
+//
+// Allocates CXL memory (via DAX device or anonymous mmap), initializes all
+// CXL queues and header, then sets up local structures for this node's roles.
+// ============================================================================
+
+TwoRWContext* two_rw_master_init(const TwoRWConfig& cfg) {
+    TwoRWContext* ctx = allocate_context(cfg);
+    if (!ctx) return nullptr;
+
+    // Allocate CXL memory
+    if (!cfg.cxl_device_path.empty()) {
+        ctx->cxl_base = mmap_cxl_device(cfg.cxl_device_path.c_str(), cfg.memory_size);
+    } else {
+        ctx->cxl_base = allocate_cxl_slab(cfg.numa_node, cfg.memory_size);
+    }
+    if (!ctx->cxl_base) {
+        delete ctx;
+        return nullptr;
+    }
+
+    CXLBase::set(ctx->cxl_base);
+    init_cxl_memory(ctx->cxl_base, ctx->layout, cfg);
+
+    // Set up multi-machine pointers
+    TwoRWHeader* hdr = ctx->layout.header(ctx->cxl_base);
+    ctx->cxl_global_stop_flag = &hdr->global_stop_flag;
+    ctx->cxl_node_sync = reinterpret_cast<CXLNodeSync*>(
+        static_cast<char*>(ctx->cxl_base) + sizeof(TwoRWHeader));
+
+    fprintf(stderr, "[2RW] Master init: node_id=%u, num_nodes=%u\n",
+            cfg.node_id, cfg.num_nodes);
+
+    init_local_structures(ctx);
+    return ctx;
+}
+
+// ============================================================================
+// two_rw_slave_attach — Multi-machine worker node (node > 0)
+//
+// Mmaps the same CXL device, waits for master's ready_flag, validates header,
+// then sets up local structures.  Does NOT memset or init CXL queues.
+// ============================================================================
+
+TwoRWContext* two_rw_slave_attach(const TwoRWConfig& cfg) {
+    TwoRWContext* ctx = allocate_context(cfg);
+    if (!ctx) return nullptr;
+
+    if (cfg.cxl_device_path.empty()) {
+        fprintf(stderr, "[2RW] ERROR: slave_attach requires --cxl-device\n");
+        delete ctx;
+        return nullptr;
+    }
+
+    ctx->cxl_base = mmap_cxl_device(cfg.cxl_device_path.c_str(), cfg.memory_size);
+    if (!ctx->cxl_base) {
+        delete ctx;
+        return nullptr;
+    }
+
+    CXLBase::set(ctx->cxl_base);
+
+    // Wait for master to finish initializing CXL memory
+    TwoRWHeader* hdr = ctx->layout.header(ctx->cxl_base);
+    fprintf(stderr, "[2RW] Node %u: waiting for master ready_flag...\n", cfg.node_id);
+
+    while (hdr->ready_flag != HEADER_READY) {
+        _mm_clflushopt(&hdr->ready_flag);
+        _mm_lfence();
+        _mm_pause();
+    }
+
+    // Validate header matches our expected global config
+    if (hdr->magic != HEADER_MAGIC) {
+        fprintf(stderr, "[2RW] ERROR: header magic mismatch (got 0x%lx, expected 0x%lx)\n",
+                hdr->magic, HEADER_MAGIC);
+        munmap(ctx->cxl_base, cfg.memory_size);
+        delete ctx;
+        return nullptr;
+    }
+    if (hdr->num_clients != cfg.num_clients || hdr->num_workers != cfg.num_workers ||
+        hdr->num_synchronizers != cfg.num_synchronizers) {
+        fprintf(stderr, "[2RW] ERROR: header config mismatch "
+                "(n=%u/%u, m=%u/%u, s=%u/%u)\n",
+                hdr->num_clients, cfg.num_clients,
+                hdr->num_workers, cfg.num_workers,
+                hdr->num_synchronizers, cfg.num_synchronizers);
+        munmap(ctx->cxl_base, cfg.memory_size);
+        delete ctx;
+        return nullptr;
+    }
+
+    fprintf(stderr, "[2RW] Node %u: attached to CXL memory, header validated.\n",
+            cfg.node_id);
+
+    // Set up multi-machine pointers
+    ctx->cxl_global_stop_flag = &hdr->global_stop_flag;
+    ctx->cxl_node_sync = reinterpret_cast<CXLNodeSync*>(
+        static_cast<char*>(ctx->cxl_base) + sizeof(TwoRWHeader));
+
+    init_local_structures(ctx);
     return ctx;
 }
 
@@ -460,15 +658,20 @@ TwoRWContext* two_rw_init(const TwoRWConfig& cfg) {
 // ============================================================================
 
 void two_rw_start_threads(TwoRWContext* ctx) {
-    const uint32_t n  = ctx->config.num_clients;
-    const uint32_t m  = ctx->config.num_workers;
-    const uint32_t s  = ctx->config.num_synchronizers;
-    const int w_base  = (ctx->config.worker_cpu_start < 0)
-                        ? static_cast<int>(2 + s)
-                        : ctx->config.worker_cpu_start;
+    const auto& cfg = ctx->config;
+    // Local ranges (finalize_ranges() already called during init)
+    const uint32_t local_sn_count     = cfg.global_sn_count;
+    const uint32_t local_worker_count = cfg.global_worker_count;
+    const uint32_t sn_start           = cfg.global_sn_start;
+    const uint32_t worker_start       = cfg.global_worker_start;
+    // CPU layout uses local indices: SNs on CPU [2 .. 2+local_sn_count-1],
+    // Workers on CPU [w_base .. w_base+local_worker_count-1]
+    const int w_base = (cfg.worker_cpu_start < 0)
+                       ? static_cast<int>(2 + local_sn_count)
+                       : cfg.worker_cpu_start;
 
-    // Response Poller on CPU 0 (when active)
-    if (ctx->config.has_response_poller()) {
+    // Response Poller on CPU 0 (when active and this node has clients)
+    if (cfg.has_response_poller() && cfg.global_client_count > 0) {
         ctx->resp_poller_thread = std::thread([ctx]() {
             CXLBase::set(ctx->cxl_base);
             pin_current_thread_to_cpu(0);
@@ -476,8 +679,8 @@ void two_rw_start_threads(TwoRWContext* ctx) {
         });
     }
 
-    // Worker Poller on CPU 1 (when active)
-    if (ctx->config.has_worker_poller()) {
+    // Worker Poller on CPU 1 (when active and this node has workers)
+    if (cfg.has_worker_poller() && local_worker_count > 0) {
         ctx->worker_poller_thread = std::thread([ctx]() {
             CXLBase::set(ctx->cxl_base);
             pin_current_thread_to_cpu(1);
@@ -485,31 +688,37 @@ void two_rw_start_threads(TwoRWContext* ctx) {
         });
     }
 
-    // Synchronizers: SN_k on CPU (k+2)
-    ctx->synchronizer_threads.resize(s);
-    for (uint32_t k = 0; k < s; k++) {
-        ctx->synchronizer_threads[k] = std::thread([ctx, k]() {
+    // Synchronizers: local SN k_local on CPU (k_local + 2)
+    ctx->synchronizer_threads.resize(local_sn_count);
+    for (uint32_t k_local = 0; k_local < local_sn_count; k_local++) {
+        uint32_t k_global = sn_start + k_local;
+        ctx->synchronizer_threads[k_local] = std::thread([ctx, k_global, k_local]() {
             CXLBase::set(ctx->cxl_base);
-            pin_current_thread_to_cpu(static_cast<int>(k + 2));
-            two_rw_synchronizer_run(ctx->sync_state_ptrs[k]);
+            pin_current_thread_to_cpu(static_cast<int>(k_local + 2));
+            two_rw_synchronizer_run(ctx->sync_state_ptrs[k_global]);
         });
     }
 
-    // Workers on CPUs [w_base .. w_base+m-1]
-    ctx->worker_threads.resize(m);
-    for (uint32_t i = 0; i < m; i++) {
-        ctx->worker_threads[i] = std::thread([ctx, i, w_base]() {
+    // Workers on CPUs [w_base .. w_base + local_worker_count - 1]
+    ctx->worker_threads.resize(local_worker_count);
+    for (uint32_t i_local = 0; i_local < local_worker_count; i_local++) {
+        uint32_t i_global = worker_start + i_local;
+        ctx->worker_threads[i_local] = std::thread([ctx, i_global, i_local, w_base]() {
             CXLBase::set(ctx->cxl_base);
-            pin_current_thread_to_cpu(w_base + static_cast<int>(i));
-            two_rw_worker_run(&ctx->worker_states[i]);
+            pin_current_thread_to_cpu(w_base + static_cast<int>(i_local));
+            two_rw_worker_run(&ctx->worker_states[i_global]);
         });
     }
 
-    const char* pm = poller_mode_name(ctx->config.poller_mode);
+    const char* pm = poller_mode_name(cfg.poller_mode);
     fprintf(stderr,
             "[2RW] Threads started: poller_mode=%s, "
-            "SN[0..%u]=CPU[2..%u], Workers=CPU[%d..%d]\n",
-            pm, s - 1, 1 + s, w_base, w_base + static_cast<int>(m) - 1);
+            "SN[%u..%u]=CPU[2..%u], Workers[%u..%u]=CPU[%d..%d]\n",
+            pm,
+            sn_start, sn_start + local_sn_count - 1,
+            1 + local_sn_count,
+            worker_start, worker_start + local_worker_count - 1,
+            w_base, w_base + static_cast<int>(local_worker_count) - 1);
 }
 
 // ============================================================================
@@ -519,7 +728,15 @@ void two_rw_start_threads(TwoRWContext* ctx) {
 void two_rw_stop(TwoRWContext* ctx) {
     const uint32_t s = ctx->config.num_synchronizers;
 
-    // Step 1: Signal stop (Request Threads must already be done submitting)
+    // Multi-node master: signal all nodes via CXL global_stop_flag
+    if (ctx->config.is_multi_node() && ctx->config.is_master() &&
+        ctx->cxl_global_stop_flag) {
+        *ctx->cxl_global_stop_flag = 1;
+        _mm_sfence();
+        fprintf(stderr, "[2RW] Master: CXL global_stop_flag set\n");
+    }
+
+    // Step 1: Signal local stop (Request Threads must already be done submitting)
     ctx->stop_flag.store(true, std::memory_order_release);
 
     // Step 2: SNs drain their RequestQueues (handled in sync loop)
@@ -550,6 +767,78 @@ void two_rw_stop(TwoRWContext* ctx) {
 }
 
 // ============================================================================
+// two_rw_node_barrier — Distributed barrier via CXL per-node ready flags
+//
+// Two-phase approach (simpler than CXL CAS):
+//   Phase 1: Caller does local synchronization (e.g., pthread_barrier for
+//            local RT + RespTh threads). Not our concern here.
+//   Phase 2: Each node's main thread sets its CXL ready flag, then waits
+//            until all nodes' flags are set.
+//
+// Single-machine: no-op (only one node).
+// ============================================================================
+
+void two_rw_node_barrier(TwoRWContext* ctx) {
+    if (!ctx->config.is_multi_node() || !ctx->cxl_node_sync)
+        return;
+
+    const uint32_t node_id   = ctx->config.node_id;
+    const uint32_t num_nodes = ctx->config.num_nodes;
+
+    // Set this node's ready flag
+    ctx->cxl_node_sync->node_ready[node_id] = 1;
+    _mm_sfence();
+
+    fprintf(stderr, "[2RW] Node %u: barrier — waiting for %u nodes...\n",
+            node_id, num_nodes);
+
+    // Wait until all nodes are ready
+    while (true) {
+        bool all_ready = true;
+        for (uint32_t k = 0; k < num_nodes; k++) {
+            _mm_clflushopt(const_cast<uint32_t*>(&ctx->cxl_node_sync->node_ready[k]));
+            _mm_lfence();
+            if (!ctx->cxl_node_sync->node_ready[k]) {
+                all_ready = false;
+                break;
+            }
+        }
+        if (all_ready) break;
+        _mm_pause();
+    }
+
+    fprintf(stderr, "[2RW] Node %u: all %u nodes ready.\n", node_id, num_nodes);
+}
+
+// ============================================================================
+// two_rw_wait_global_stop — Slave node waits for master's stop signal
+//
+// Polls CXL global_stop_flag until master sets it, then calls two_rw_stop()
+// to set local stop_flag and join threads.
+// Single-machine: no-op.
+// ============================================================================
+
+void two_rw_wait_global_stop(TwoRWContext* ctx) {
+    if (!ctx->config.is_multi_node() || !ctx->cxl_global_stop_flag)
+        return;
+
+    fprintf(stderr, "[2RW] Node %u: waiting for global stop...\n",
+            ctx->config.node_id);
+
+    while (true) {
+        _mm_clflushopt(const_cast<uint32_t*>(ctx->cxl_global_stop_flag));
+        _mm_lfence();
+        if (*ctx->cxl_global_stop_flag) break;
+        _mm_pause();
+    }
+
+    fprintf(stderr, "[2RW] Node %u: global stop detected, stopping local threads.\n",
+            ctx->config.node_id);
+
+    two_rw_stop(ctx);
+}
+
+// ============================================================================
 // two_rw_destroy
 // ============================================================================
 
@@ -559,7 +848,6 @@ void two_rw_destroy(TwoRWContext* ctx) {
     const uint32_t n = ctx->config.num_clients;
     const uint32_t m = ctx->config.num_workers;
     const uint32_t s = ctx->config.num_synchronizers;
-    const uint32_t wps = m / s;
     const bool numa_ok = (numa_available() >= 0);
 
     // Non-SN allocations → always regular delete[]
@@ -585,6 +873,10 @@ void two_rw_destroy(TwoRWContext* ctx) {
     // Per-SN allocations: req_consumers, ring_producers, sync_state
     if (ctx->sync_state_ptrs) {
         for (uint32_t k = 0; k < s; k++) {
+            const uint32_t w_cnt = ctx->worker_to_sn
+                ? ctx->config.workers_count_for_sn(ctx->worker_to_sn, k)
+                : (m / s);
+
             // req_consumers[n]
             if (ctx->sn_req_consumers && ctx->sn_req_consumers[k]) {
                 if (ctx->sn_req_con_is_numa && ctx->sn_req_con_is_numa[k] && numa_ok) {
@@ -597,14 +889,14 @@ void two_rw_destroy(TwoRWContext* ctx) {
                     delete[] ctx->sn_req_consumers[k];
                 }
             }
-            // ring_producers[wps]
+            // ring_producers[w_cnt]
             if (ctx->sn_ring_producers && ctx->sn_ring_producers[k]) {
                 if (ctx->sn_ring_prod_is_numa && ctx->sn_ring_prod_is_numa[k] && numa_ok) {
-                    for (uint32_t i = 0; i < wps; i++)
+                    for (uint32_t i = 0; i < w_cnt; i++)
                         ctx->sn_ring_producers[k][i]
                             .~CXLSpscProducer<KVRequest, QUEUE_CAP>();
                     numa_free(ctx->sn_ring_producers[k],
-                              wps * sizeof(CXLSpscProducer<KVRequest, QUEUE_CAP>));
+                              w_cnt * sizeof(CXLSpscProducer<KVRequest, QUEUE_CAP>));
                 } else {
                     delete[] ctx->sn_ring_producers[k];
                 }
@@ -627,6 +919,7 @@ void two_rw_destroy(TwoRWContext* ctx) {
     delete[] ctx->sn_req_con_is_numa;
     delete[] ctx->sn_ring_prod_is_numa;
     delete[] ctx->sn_state_is_numa;
+    delete[] ctx->worker_to_sn;
 
     if (ctx->cxl_base) {
         munmap(ctx->cxl_base, ctx->config.memory_size);

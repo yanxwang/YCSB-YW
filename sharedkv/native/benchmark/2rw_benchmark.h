@@ -131,8 +131,9 @@ struct PhaseResult {
 PhaseResult run_2rw_phase(
     TwoRWContext*                     ctx,
     const std::vector<YCSBOperation>& ops,
-    uint32_t                          num_clients,
-    int                               cpu_start,
+    uint32_t                          num_clients,     // LOCAL client count (this node)
+    uint32_t                          global_client_start, // first GLOBAL client_id
+    int                               client_cpu_start,
     bool                              throughput_mode,
     int                               duration_sec,
     uint32_t                          ops_per_client,

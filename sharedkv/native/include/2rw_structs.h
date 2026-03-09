@@ -259,19 +259,54 @@ struct alignas(64) FreeBlockQueue {
 
 // ============================================================================
 // 2RW CXL Memory Header (64B, at offset 0 of CXL region)
+//
+// Multi-machine fields (Section 6.1 of multi_machine_architecture_spec.txt):
+//   num_synchronizers : S_total (was _pad0 in single-machine)
+//   num_nodes         : number of machines in the cluster (1 = single-machine)
+//   ready_flag        : master sets to HEADER_READY after init_cxl_memory()
+//   global_stop_flag  : master sets to 1 to signal all nodes to stop
+//
+// Field layout:
+//   [0..7]   magic (8B)
+//   [8..11]  num_clients (4B) = N_total
+//   [12..15] num_workers (4B) = M_total
+//   [16..19] slots_per_client (4B)
+//   [20..23] num_buckets (4B)
+//   [24..27] queue_depth (4B)
+//   [28..31] num_synchronizers (4B) = S_total
+//   [32..39] total_size (8B)
+//   [40..43] num_nodes (4B)
+//   [44..47] ready_flag (4B)
+//   [48..51] global_stop_flag (4B)
+//   [52..63] _pad (12B)
 // ============================================================================
 
+constexpr uint32_t HEADER_READY    = 0xBEEF;
+constexpr uint32_t MAX_NODES       = 16;
+
 struct alignas(64) TwoRWHeader {
-    uint64_t magic;           // HEADER_MAGIC
-    uint32_t num_clients;     // n
-    uint32_t num_workers;     // m
+    uint64_t magic;               // HEADER_MAGIC
+    uint32_t num_clients;         // N_total
+    uint32_t num_workers;         // M_total
     uint32_t slots_per_client;
     uint32_t num_buckets;
     uint32_t queue_depth;
-    uint32_t _pad0;
+    uint32_t num_synchronizers;   // S_total (was _pad0)
     uint64_t total_size;
-    char     _pad[24];
+    uint32_t num_nodes;           // cluster size (1 = single-machine)
+    uint32_t ready_flag;          // 0 = not ready, HEADER_READY = initialized
+    volatile uint32_t global_stop_flag;  // 0 = running, 1 = stopping
+    char     _pad[12];
 };
 static_assert(sizeof(TwoRWHeader) == 64);
+
+// Per-node ready flags for distributed barrier (separate cache-line-aligned region).
+// Placed after TwoRWHeader in CXL memory (at header_off + 64).
+// Each node writes its own slot; all nodes read all slots.
+struct alignas(64) CXLNodeSync {
+    volatile uint32_t node_ready[MAX_NODES];  // 0 = not ready, 1 = ready
+    char _pad[64 - MAX_NODES * sizeof(uint32_t)];
+};
+static_assert(sizeof(CXLNodeSync) == 64);
 
 } // namespace TwoRW

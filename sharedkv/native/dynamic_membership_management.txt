@@ -43,16 +43,69 @@ struct alignas(64) UnifiedBlock {
 ===============================================================================
 3. 分级 ID 管理：块所有权交换 (Ownership Swap)
 ===============================================================================
-为了消除对全局分配器的竞争，采用批发-零售模型。
+为了消除对全局分配器的竞争，采用三级批发-零售模型。
+Block 跨 Client 迁移是正常现象（Client A 插入的 key 被 Client B 更新时，
+id_old 归还到 Client B），因此全局 Bitmap 不按 Client 分段，使用原子位操作。
 
-1. 全局池 (Global Reservoir)：基于位图 (Bitmap) 管理所有 block_id。
-2. 本地缓存 (Local Cache)：Request Thread 私有的 LIFO 栈 (容量 1024)。
-   - 批发：栈空时，向全局池原子申请 256 个 ID。
-   - 零售：请求时弹出一个 ID (id_new)。
-3. 交换协议 (Swap Protocol)：
-   - Worker 接收 id_new，在哈希链表中找到旧版本的 id_old。
-   - Worker 将 id_new 挂入索引，并在 Response 中传回 id_old。
-   - Response Thread 将 id_old 压回该 Client 的 Local Cache，实现循环。
+[三级存储结构]
+
+  Level 1 — LocalBlockCache (LBC)
+    位置：DRAM，RT 私有
+    结构：LIFO 栈，容量 4096
+    访问者：仅 Request Thread（零同步开销）
+    用途：RT 发请求时 pop 一个 block_id，纯本地操作
+
+  Level 2 — FreeBlockQueue (FBQ)
+    位置：DRAM，per-client
+    结构：SPSC 环形队列，容量 4096
+    生产者：Response Thread（回收 Worker 返回的 id_old）
+    消费者：Request Thread（drain 到 LBC）
+    用途：跨线程传递回收的 block_id，cache line bouncing 最小化
+
+  Level 3 — CXL Bitmap (Global Reservoir)
+    位置：CXL 共享内存，globalidmap 区域
+    结构：位图，1 bit per block_id，总 ceil(total_blocks/8) 字节
+    访问者：所有 RT（原子位操作：lock bts / lock btr）
+    用途：全局 block_id 池，LBC 溢出时归还、LBC+FBQ 耗尽时批发
+    优化：每个 Client 维护 scan_hint（上次扫描位置），减少竞争
+
+[操作流程]
+
+  Acquire（RT 取 block_id，发请求前调用）：
+    1. LBC pop          → 最快路径，纯本地栈操作
+    2. FBQ drain → LBC  → 中等路径，批量 pop 到 LBC（填满到 4096）
+    3. Bitmap batch alloc(256) → 慢路径，扫描 bitmap 批量分配 256 个到 LBC
+
+  Drain（RT 定期调用，保持 FBQ 可消费，防止回收链路死锁）：
+    1. if LBC.top >= 4096:
+         批量归还 LBC 底部 256 个 block_id → Bitmap（原子 set bit）
+         LBC.top -= 256
+    2. while LBC.top < 4096:
+         FBQ.pop → LBC.push
+
+  Recycle（Response Thread 回收 block_id）：
+    push block_id → FBQ（不变，SPSC 单生产者写入）
+
+[交换协议 (Swap Protocol)]
+  - RT 从 LBC pop 获得 id_new，填充 key/val 到 UnifiedBlock[id_new]。
+  - Worker 接收 id_new，在哈希链表中找到旧版本的 id_old。
+  - Worker 将 id_new 挂入索引，并在 Response 中传回 id_old。
+  - Response Thread 将 id_old push 到 FBQ。
+  - RT drain FBQ → LBC（或 LBC 满时 → Bitmap），完成循环。
+
+[死锁预防]
+  旧设计中 LBC 容量 < FBQ 容量，RT 被 RequestQueue 堵住时 LBC 满、
+  drain 成为 no-op、FBQ 填满、RespThread 卡住、整条流水线死锁。
+  新设计中 LBC 满时归还 Bitmap，FBQ 永远能被 drain，循环不会断裂。
+
+[Bitmap 操作]
+  分配 (alloc_batch)：
+    从 scan_hint 开始扫描 64-bit word，找 set bit（=可用 block）。
+    对每个可用 bit 执行 lock btr（atomic test-and-reset），成功则收入 LBC。
+    收集满 256 个或扫描到末尾为止。更新 scan_hint。
+  归还 (free_batch)：
+    对每个 block_id 执行 lock bts（atomic test-and-set），将 bit 置 1。
+    批量操作，256 个一次。
 
 ===============================================================================
 4. 超长 Value 处理：溢出路径 (Spillover Path)

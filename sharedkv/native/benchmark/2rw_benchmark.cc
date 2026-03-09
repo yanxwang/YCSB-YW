@@ -276,14 +276,25 @@ static void* response_thread_fn(void* arg) {
                     }
 
                     // Recycle block IDs → FreeBlockQueue (unblocks Request Thread).
-                    // Spin if the queue is full rather than silently dropping the ID.
-                    // When the queue is full it means the RT is blocked on submit;
-                    // once the RT submits a request it calls two_rw_acquire_block()
-                    // which drains the queue, so this spin always makes progress.
-                    // Exception: if the RT has already finished all its ops (req_done),
-                    // the block is no longer needed and can be discarded safely.
+                    // If push fails (queue full), flush all pending ResponseQueue
+                    // read_idx first to break a potential circular deadlock:
+                    //   RespTh stuck in recycle(FBQ full) → can't drain ResponseQueues
+                    //   → Workers blocked on ResponseQueue full → WorkerRings fill
+                    //   → SN blocked → RequestQueues fill → RT blocked on submit
+                    //   → RT cache full → drain_freeblocks is no-op → FBQ stays full
+                    // Flushing read_idx lets Workers enqueue → drain WorkerRings →
+                    // SN flows → RT submits → acquire_block drains cache →
+                    // drain_freeblocks pops from FBQ → push succeeds.
                     auto recycle = [&](uint32_t id) {
                         if (id == 0) return;
+                        if (ctx->free_block_queues[cid].push(id)) return;  // fast path
+                        // Slow path: flush all dirty read_idx to unblock pipeline
+                        for (uint32_t qi = 0; qi < m; qi++) {
+                            if (lazy_count[qi] > 0) {
+                                ctx->resp_consumers[cid * m + qi].flush_read_idx();
+                                lazy_count[qi] = 0;
+                            }
+                        }
                         while (!ctx->free_block_queues[cid].push(id)) {
                             recycle_waits++;
                             if (ctrl.req_done.load(std::memory_order_relaxed)) return;
@@ -314,6 +325,16 @@ static void* response_thread_fn(void* arg) {
             empty_rounds++;
         }
         drained_any_this_epoch = false;
+
+        // Flush all dirty read_idx before sleeping.
+        // Without this, Workers may see stale read_idx → think ResponseQueue
+        // is full → block on enqueue → WorkerRing fills → SN blocks → deadlock.
+        for (uint32_t i = 0; i < m; i++) {
+            if (lazy_count[i] > 0) {
+                ctx->resp_consumers[cid * m + i].flush_read_idx();
+                lazy_count[i] = 0;
+            }
+        }
 
         // Update shared counter
         ctrl.responded.store(completed + failed, std::memory_order_release);
@@ -362,16 +383,17 @@ PhaseResult run_2rw_phase(
     TwoRWContext*                     ctx,
     const std::vector<YCSBOperation>& ops,
     uint32_t                          num_clients,
-    int                               cpu_start,
+    uint32_t                          global_client_start,
+    int                               client_cpu_start,
     bool                              throughput_mode,
     int                               duration_sec,
     uint32_t                          ops_per_client,
     bool                              measure_latency)
 {
-    assert(num_clients == ctx->config.num_clients);
     assert(!ops.empty());
 
-    const uint32_t n        = num_clients;
+    const uint32_t n        = num_clients;   // LOCAL client count
+    const uint32_t n_total  = ctx->config.num_clients;  // GLOBAL client count
     const uint32_t op_count = static_cast<uint32_t>(ops.size());
 
     // Barrier: n request threads + n response threads + main thread
@@ -388,13 +410,15 @@ PhaseResult run_2rw_phase(
     std::vector<RespThreadArgs> resp_args(n);
 
     for (uint32_t j = 0; j < n; j++) {
-        // Slice ops evenly across clients for fixed-ops mode
-        const uint32_t slice = op_count / n;
-        const uint32_t start = j * slice;
+        // Global client_id for this local thread
+        const uint32_t global_cid = global_client_start + j;
+        // Slice ops evenly across ALL clients (global), each client handles its global slice
+        const uint32_t slice = op_count / n_total;
+        const uint32_t start = global_cid * slice;
 
         req_args[j].ctx             = ctx;
-        req_args[j].client_id       = j;
-        req_args[j].cpu_id          = cpu_start + static_cast<int>(j);
+        req_args[j].client_id       = global_cid;
+        req_args[j].cpu_id          = client_cpu_start + static_cast<int>(j);
         req_args[j].operations      = &ops;
         req_args[j].ops_start       = start;
         req_args[j].ops_count       = throughput_mode ? 0 : ops_per_client;
@@ -404,8 +428,8 @@ PhaseResult run_2rw_phase(
         req_args[j].ctrl            = &ctrl[j];
 
         resp_args[j].ctx               = ctx;
-        resp_args[j].client_id         = j;
-        resp_args[j].cpu_id            = cpu_start + static_cast<int>(n) + static_cast<int>(j);
+        resp_args[j].client_id         = global_cid;
+        resp_args[j].cpu_id            = client_cpu_start + static_cast<int>(n) + static_cast<int>(j);
         resp_args[j].measure_latency   = measure_latency;
         resp_args[j].verbose           = ctx->config.verbose;
         resp_args[j].use_uintr         = ctx->config.resp_thread_uses_uintr();

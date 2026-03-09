@@ -393,57 +393,79 @@ Data flow example (Worker 12 on Node 1, Client 0 on Node 0):
         // recycle block_ids via local FreeBlockQueue
 
 ================================================================================
-10. BLOCK ALLOCATION STRATEGY
+10. BLOCK ALLOCATION STRATEGY — Three-Level Bitmap Model
 ================================================================================
 
-Two distinct mechanisms exist for block management — do not confuse them:
+Block allocation uses a three-level batch/retail model. The former bump
+allocator (block_alloc_next) has been replaced by a CXL bitmap that supports
+both allocation AND return of block_ids.
 
-  (a) ctx->block_alloc_next (std::atomic<uint32_t>, LOCAL DRAM):
-      The actual fast-path bump allocator.  Each call to acquire_block()
-      does fetch_add(1) on this counter to get a fresh block_id.
-      This is the hot path used by every PUT/INSERT.
+[Three levels]
 
-  (b) GlobalIDMap bitmap (in CXL, TwoRWLayout::globalidmap_off):
-      A reserved bookkeeping bitmap that tracks which block_ids are allocated.
-      Currently barely used — it exists as infrastructure for future features
-      (e.g., crash recovery, defragmentation) but is NOT on the allocation
-      fast path.
+  Level 1 — LocalBlockCache (LBC), DRAM, per-client:
+      RT-private LIFO stack, capacity 4096. Zero synchronization.
+      Acquire: pop from top. Fastest path.
 
-For multi-machine, only (a) needs partitioning.  (b) remains unchanged.
+  Level 2 — FreeBlockQueue (FBQ), DRAM, per-client:
+      SPSC ring (cap 4096) between Response Thread (producer) and RT (consumer).
+      RT periodically drains FBQ → LBC.
 
-Problem: multiple nodes cannot atomically increment a local DRAM counter.
+  Level 3 — CXL Bitmap (GlobalIDMap), CXL shared memory:
+      1 bit per block_id, ceil(total_blocks/8) bytes.
+      bit=1 → FREE, bit=0 → IN-USE.
+      All nodes access via atomic bit ops (LOCK BTR for alloc, LOCK BTS for free).
+      Per-client scan_hint spreads starting position to reduce contention.
 
-Solution: PRE-PARTITION the block ID space across nodes at init time.
+[Acquire flow (RT)]
 
-Each node gets a disjoint range of fresh block IDs:
+    1. LBC pop                              → ~1 cycle, pure local
+    2. FBQ drain → LBC (up to 256)          → SPSC pop, fill LBC
+    3. bitmap_alloc_batch(256)              → scan CXL bitmap, LOCK BTR
+    4. abort if bitmap exhausted
 
-    Node k's client j (global client_id = c_start + j):
-        Pre-filled range: [(c_start+j) * slots_per_client + 1,
-                           (c_start+j+1) * slots_per_client]
-        → loaded into LocalBlockCache[j] at init
+[Drain flow (RT, called while spinning on RequestQueue)]
 
-    Node k's bump allocator range:
-        bump_start = N_total * slots_per_client + 1 + k * bump_per_node
-        bump_end   = bump_start + bump_per_node - 1
+    Phase A — LBC overflow spill:
+      if LBC.top >= 4096:
+          bitmap_free_batch(LBC.stack[0..255])     → LOCK BTS × 256
+          memmove stack down, LBC.top -= 256
+    Phase B — FBQ → LBC:
+      while LBC.top < 4096: FBQ.pop → LBC.push
 
-    Where:
-        total_fresh = layout.total_blocks - (N_total * slots_per_client + 1)
-        bump_per_node = total_fresh / num_nodes
+    Phase A prevents deadlock: even when RT is blocked, FBQ can always be
+    drained because LBC always has room after spilling to bitmap.
 
-    ctx->block_alloc_next.store(bump_start)
-    ctx->block_alloc_end = bump_end     // NEW: upper bound for this node
+[Recycle flow (Response Thread)]
 
-Each node's bump allocator is LOCAL (std::atomic<uint32_t> in local DRAM).
-No cross-machine atomic needed. Each node allocates from its own disjoint
-range for new-key INSERTs.
+    push block_id → FBQ (unchanged, SPSC single-producer write)
 
-If a node exhausts its bump range, it can:
-  (a) Fail the allocation (out of blocks)
-  (b) Request more blocks from a coordinator (future optimization)
+[Bitmap initialization (master node)]
 
-For typical workloads (YCSB), the LOAD phase fills the hash table and the
-TRANSACTION phase recycles blocks. Running out of fresh blocks is unlikely
-if the partition is sized correctly.
+    1. memset bitmap to 0xFF (all free)
+    2. Clear bit 0 (block 0 = reserved sentinel)
+    3. Clear bits [1 .. N_total * slots_per_client] (pre-allocated to LBCs)
+    4. Clear bits beyond total_blocks in last word (invalid region)
+
+[Multi-machine considerations]
+
+    The bitmap lives in CXL shared memory — all nodes access the same bitmap.
+    LOCK BTR / LOCK BTS provide atomicity via CXL cache coherence.
+
+    No per-node partitioning of the bitmap is needed. Cross-node contention
+    is minimized by:
+      - scan_hint: each client starts scanning from a different bitmap region
+      - Batch ops: 256 blocks per bitmap visit → amortized CXL access
+      - Fast path: most acquires come from LBC (local) or FBQ (DRAM), not bitmap
+
+    Pre-filled ranges per client:
+        Node k's client j (global client_id = c_start + j):
+            Pre-filled: [(c_start+j) * slots_per_client + 1,
+                         (c_start+j+1) * slots_per_client]
+            → loaded into LocalBlockCache[j] at init, bits cleared in bitmap
+
+    scan_hint initialization:
+        Each client's scan_hint = (client_index * total_words) / num_clients
+        This spreads clients across the bitmap to reduce lock contention.
 
 ================================================================================
 11. FREEBLOCKQUEUE AND BLOCK RECYCLING
@@ -452,20 +474,30 @@ if the partition is sized correctly.
 FreeBlockQueue is a LOCAL DRAM SPSC queue between Response Thread j and
 Request Thread j — both on the SAME node. No changes needed.
 
-Block recycling flow (same as single-machine):
+Block recycling flow (three-level):
     1. Worker returns block_id_a / block_id_b in KVResponse
-    2. RespTh reads KVResponse from CXL, pushes block_ids to local FreeBlockQueue
-    3. RT pops from FreeBlockQueue into LocalBlockCache
+    2. RespTh reads KVResponse from CXL, pushes block_ids to FBQ
+    3. RT drains FBQ → LBC (Phase B of drain)
+    4. If LBC overflows: RT spills excess → CXL bitmap (Phase A of drain)
+    5. When LBC + FBQ empty: RT batch-allocs from bitmap (slow path)
 
 The recycled block_ids may have been originally allocated by a different node
 (e.g., a block allocated by Node 0 may end up recycled by Node 1's client
 after a PUT replaces it). This is correct because:
   - Block IDs are global (index into shared CXL UnifiedBlockPool)
   - Any node can read/write any block via CXL
-  - The recycled block_id is reused by the same client that received it,
-    which is on the same node as its RT/RespTh pair
+  - Bitmap free (LOCK BTS) works on any block_id regardless of origin node
 
 Cross-node block migration is implicit and free — no explicit transfer needed.
+
+[Deadlock prevention]
+    In the old design, LBC had capacity 1024 < FBQ capacity 4096. When RT was
+    blocked on RequestQueue full, LBC filled up, drain became a no-op, FBQ
+    filled, RespThread blocked, and the entire pipeline deadlocked.
+
+    The new design breaks this cycle: when LBC is full, drain Phase A spills
+    256 entries to the CXL bitmap, making room for more FBQ draining. FBQ can
+    always be consumed, so RespThread never blocks on push.
 
 ================================================================================
 12. UINTR / POLLER (LOCAL ONLY)

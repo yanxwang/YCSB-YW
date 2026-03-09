@@ -11,6 +11,7 @@
 #include <atomic>
 #include <thread>
 #include <vector>
+#include <string>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -96,6 +97,27 @@ struct TwoRWConfig {
     uint32_t read_ack_batch     = 32;         // SN: flush read_idx every N dequeues per queue
     PollerMode poller_mode      = PollerMode::RESPONSE;  // --poller-mode={response,worker,dual,none}
 
+    // ---- Multi-machine cluster config ----
+    // When cluster_config_path is empty, single-machine mode (backward compat).
+    // When set, global counts come from config file; local ranges from node_id.
+    std::string cluster_config_path;              // --cluster-config <path>
+    std::string cxl_device_path;                  // --cxl-device <path> (DAX, multi-machine only)
+    uint32_t node_id            = 0;              // --node-id (0 = master)
+    uint32_t num_nodes          = 1;              // total machines in cluster
+    // Per-node ranges (global indices)
+    uint32_t global_sn_start      = 0;
+    uint32_t global_sn_count      = 0;            // 0 = auto (all local in single-machine)
+    uint32_t global_worker_start  = 0;
+    uint32_t global_worker_count  = 0;            // 0 = auto
+    uint32_t global_client_start  = 0;
+    uint32_t global_client_count  = 0;            // 0 = auto
+    // Flexible worker-per-SN allocation (opt-in via --worker-per-sn "6,4,6,4")
+    // Empty = default even division.  When set, sum must equal num_workers.
+    std::vector<uint32_t> worker_per_sn;          // [s] workers per SN
+
+    bool is_multi_node() const { return !cluster_config_path.empty() && num_nodes > 1; }
+    bool is_master()     const { return node_id == 0; }
+
     // Derived helpers
     bool has_response_poller() const { return poller_mode == PollerMode::RESPONSE || poller_mode == PollerMode::DUAL; }
     bool has_worker_poller()   const { return poller_mode == PollerMode::WORKER   || poller_mode == PollerMode::DUAL; }
@@ -146,10 +168,35 @@ struct TwoRWConfig {
             match("--num-buckets",         c.num_buckets)         ||
             match("--queue-depth",         c.queue_depth)         ||
             match("--memory-size",         c.memory_size)         ||
-            match("--worker-cpu-start",    c.worker_cpu_start);
-            // --poller-mode is a string, handled separately
+            match("--worker-cpu-start",    c.worker_cpu_start) ||
+            match("--node-id",             c.node_id)          ||
+            match("--global-sn-start",     c.global_sn_start)      ||
+            match("--global-sn-count",     c.global_sn_count)      ||
+            match("--global-worker-start", c.global_worker_start)  ||
+            match("--global-worker-count", c.global_worker_count)  ||
+            match("--global-client-start", c.global_client_start)  ||
+            match("--global-client-count", c.global_client_count)  ||
+            match("--num-nodes",           c.num_nodes);
+            // String flags handled separately
             if (strcmp(argv[i], "--poller-mode") == 0 && i + 1 < argc) {
                 c.poller_mode = parse_poller_mode(argv[i + 1]);
+            }
+            if (strcmp(argv[i], "--cluster-config") == 0 && i + 1 < argc) {
+                c.cluster_config_path = argv[i + 1];
+            }
+            if (strcmp(argv[i], "--cxl-device") == 0 && i + 1 < argc) {
+                c.cxl_device_path = argv[i + 1];
+            }
+            if (strcmp(argv[i], "--worker-per-sn") == 0 && i + 1 < argc) {
+                c.worker_per_sn.clear();
+                const char* p = argv[i + 1];
+                while (*p) {
+                    char* end;
+                    uint32_t v = static_cast<uint32_t>(strtoul(p, &end, 10));
+                    c.worker_per_sn.push_back(v);
+                    if (*end == ',') end++;
+                    p = end;
+                }
             }
         }
         return c;
@@ -182,13 +229,77 @@ struct TwoRWConfig {
             poller_mode_name(poller_mode));
     }
 
+    // Fill in auto-derived fields (call after parsing).
+    void finalize_ranges() {
+        if (!is_multi_node()) {
+            // Single-machine: force starts to 0 (ignore stray --global-*-start flags)
+            global_sn_start     = 0;
+            global_worker_start = 0;
+            global_client_start = 0;
+        }
+        if (global_sn_count == 0)     global_sn_count     = num_synchronizers;
+        if (global_worker_count == 0) global_worker_count = num_workers;
+        if (global_client_count == 0) global_client_count = num_clients;
+    }
+
+    // Build the worker_to_sn lookup table.  Returns a heap-allocated array
+    // of size num_workers.  Caller owns the memory.
+    uint8_t* build_worker_to_sn() const {
+        uint8_t* tbl = new uint8_t[num_workers];
+        if (!worker_per_sn.empty()) {
+            // Custom: user-specified workers per SN
+            uint32_t w = 0;
+            for (uint32_t sn = 0; sn < num_synchronizers && sn < worker_per_sn.size(); sn++) {
+                for (uint32_t j = 0; j < worker_per_sn[sn]; j++) {
+                    if (w < num_workers) tbl[w++] = static_cast<uint8_t>(sn);
+                }
+            }
+            // Fill remaining (shouldn't happen if validated)
+            while (w < num_workers) tbl[w++] = static_cast<uint8_t>(num_synchronizers - 1);
+        } else {
+            // Default: even division
+            uint32_t wps = num_workers / num_synchronizers;
+            for (uint32_t w = 0; w < num_workers; w++)
+                tbl[w] = static_cast<uint8_t>(w / wps);
+        }
+        return tbl;
+    }
+
+    // Compute workers_base for a given SN (first global worker_id it manages).
+    uint32_t workers_base_for_sn(const uint8_t* worker_to_sn, uint32_t sn_id) const {
+        for (uint32_t w = 0; w < num_workers; w++)
+            if (worker_to_sn[w] == sn_id) return w;
+        return 0;
+    }
+
+    // Compute workers_count for a given SN.
+    uint32_t workers_count_for_sn(const uint8_t* worker_to_sn, uint32_t sn_id) const {
+        uint32_t cnt = 0;
+        for (uint32_t w = 0; w < num_workers; w++)
+            if (worker_to_sn[w] == sn_id) cnt++;
+        return cnt;
+    }
+
     bool validate() const {
         if (num_clients == 0 || num_workers == 0) return false;
-        if (num_synchronizers == 0 || num_workers % num_synchronizers != 0) return false;
+        if (num_synchronizers == 0) return false;
         if (slots_per_client == 0 || slots_per_client > QUEUE_CAP) return false;
         if (queue_depth == 0 || queue_depth > QUEUE_CAP) return false;
         if ((queue_depth & (queue_depth - 1)) != 0) return false;  // power of 2
         if ((num_buckets & (num_buckets - 1)) != 0) return false;
+
+        if (!worker_per_sn.empty()) {
+            // Flexible mode: validate sum == num_workers, size == num_synchronizers
+            if (worker_per_sn.size() != num_synchronizers) return false;
+            uint32_t sum = 0;
+            for (auto v : worker_per_sn) sum += v;
+            if (sum != num_workers) return false;
+        } else {
+            // Default mode: must divide evenly
+            if (num_workers % num_synchronizers != 0) return false;
+        }
+
+        if (num_nodes > MAX_NODES) return false;
         return true;
     }
 };
@@ -229,19 +340,53 @@ struct WorkerOpStats {
 // ============================================================================
 // LocalBlockCache — per Request Thread block ID pool
 //
-// Two-layer design:
-//   ① local_stack[1024]: RT-private LIFO stack, zero concurrency overhead.
-//      Filled from FreeBlockQueue (recycled blocks) or Global Bitmap (fresh blocks).
-//   ② FreeBlockQueue: SPSC bridge from Response Thread → RT.
-//      RT drains it into local_stack when stack runs low.
+// Three-level design (see dynamic_membership_management.txt §3):
+//   ① LocalBlockCache (LBC): RT-private LIFO stack, capacity 4096, zero sync.
+//   ② FreeBlockQueue (FBQ): SPSC bridge from Response Thread → RT, capacity 4096.
+//   ③ CXL Bitmap (Global Reservoir): shared bitmap on CXL, atomic bit ops.
 //
-// RT acquires block_id via two_rw_acquire_block() (see below).
+// Acquire:  LBC pop → FBQ drain→LBC → bitmap batch alloc(256)
+// Drain:    LBC full → spill 256 to bitmap; then FBQ→LBC
+// Recycle:  RespThread push → FBQ (unchanged)
 // ============================================================================
 
+static constexpr uint32_t LOCAL_CACHE_CAP  = QUEUE_CAP;      // 4096
+static constexpr uint32_t BITMAP_BATCH     = 256;             // batch alloc/free size
+
 struct alignas(64) LocalBlockCache {
-    uint32_t stack[1024];
-    uint32_t top = 0;   // number of valid entries in stack[]
+    uint32_t stack[LOCAL_CACHE_CAP];
+    uint32_t top = 0;        // number of valid entries in stack[]
+    uint32_t scan_hint = 0;  // word index into bitmap, per-client to reduce contention
 };
+
+// ============================================================================
+// CXL Bitmap atomic primitives
+//
+// Bitmap convention: bit=1 → FREE, bit=0 → IN-USE.
+// Uses x86 LOCK BTR (alloc: test-and-reset) and LOCK BTS (free: test-and-set).
+// ============================================================================
+
+// Atomically test and reset bit. Returns true if bit was previously set (= successful alloc).
+static inline bool atomic_btr(volatile uint64_t* word, uint32_t bit) {
+    bool was_set;
+    asm volatile("lock btrq %2, %0"
+                 : "+m"(*word), "=@ccc"(was_set)
+                 : "Ir"((uint64_t)bit)
+                 : "memory");
+    return was_set;
+}
+
+// Atomically test and set bit. Returns true if bit was already set (= double-free warning).
+static inline bool atomic_bts(volatile uint64_t* word, uint32_t bit) {
+    bool was_set;
+    asm volatile("lock btsq %2, %0"
+                 : "+m"(*word), "=@ccc"(was_set)
+                 : "Ir"((uint64_t)bit)
+                 : "memory");
+    return was_set;
+}
+
+// bitmap_alloc_batch / bitmap_free_batch — defined after TwoRWContext (forward ref).
 
 // ============================================================================
 // Thread State Structs (passed to each thread function)
@@ -313,6 +458,9 @@ struct PollerThreadState {
     std::atomic<bool>*   stop_flag;
     uint32_t             num_clients;
     uint32_t             num_workers;
+    // Multi-machine: only monitor this node's clients (global indices)
+    uint32_t             global_client_start = 0;    // first global client_id on this node
+    uint32_t             global_client_count = 0;    // number of clients on this node (0 = all)
     // UINTR fds for Response Threads — set by Response Threads, read by Poller
     int*                 resp_uintr_fds;   // [num_clients], -1 if not registered
     std::atomic<bool>*   resp_fd_ready;    // [num_clients]
@@ -330,6 +478,9 @@ struct WorkerPollerThreadState {
     void*                cxl_base;
     std::atomic<bool>*   stop_flag;
     uint32_t             num_workers;
+    // Multi-machine: only monitor this node's workers (global indices)
+    uint32_t             global_worker_start = 0;    // first global worker_id on this node
+    uint32_t             global_worker_count = 0;    // number of workers on this node (0 = all)
     bool                 use_local_ring = false;  // true → check LocalSpscQueue instead of CXL WorkerRing
     // Pointers to local DRAM rings (only used when use_local_ring=true)
     LocalSpscQueue<KVRequest, QUEUE_CAP>* local_rings = nullptr;  // [num_workers]
@@ -392,10 +543,22 @@ struct TwoRWContext {
     // Sleeping flag: set by Worker Thread before uintr_wait(), cleared after.
     // std::atomic<bool>*  worker_sleeping  = nullptr;  // [num_workers]
 
-    // Global block bump allocator — used when LocalBlockCache and FreeBlockQueue are empty.
-    // Initialized to n*slots_per_client+1 (beyond the pre-filled range).
-    // Each RT atomically claims fresh block IDs from the UnifiedBlockPool.
-    alignas(64) std::atomic<uint32_t>    block_alloc_next{1};
+    // CXL Bitmap pointer (cached from layout.globalidmap(cxl_base) for fast access).
+    // Treated as array of volatile uint64_t words; bit=1 means FREE.
+    volatile uint64_t*  block_bitmap      = nullptr;
+    uint32_t            block_bitmap_words = 0;   // total 64-bit words in bitmap
+
+    // Worker-to-SN lookup table: worker_to_sn[global_worker_id] → sn_id.
+    // Always populated (even in default even-division mode).
+    // Owned by TwoRWContext, freed in two_rw_destroy().
+    uint8_t*                             worker_to_sn = nullptr;  // [num_workers]
+
+    // Pointer to CXL global_stop_flag in TwoRWHeader (multi-machine).
+    // nullptr in single-machine mode (uses local stop_flag only).
+    volatile uint32_t*                   cxl_global_stop_flag = nullptr;
+
+    // Pointer to CXLNodeSync region (multi-machine barrier).
+    CXLNodeSync*                         cxl_node_sync = nullptr;
 
     // Thread control
     alignas(64) std::atomic<bool>        stop_flag{false};
@@ -415,10 +578,29 @@ struct TwoRWContext {
 // Public API
 // ============================================================================
 
+// Single-machine init (backward compat) — allocates CXL, inits all structures.
 TwoRWContext* two_rw_init(const TwoRWConfig& config);
+
+// Multi-machine init: master allocates + initializes CXL, then local structures.
+TwoRWContext* two_rw_master_init(const TwoRWConfig& config);
+
+// Multi-machine init: worker node mmaps CXL, waits for master, then local structures.
+TwoRWContext* two_rw_slave_attach(const TwoRWConfig& config);
+
 void two_rw_start_threads(TwoRWContext* ctx);
 void two_rw_stop(TwoRWContext* ctx);
 void two_rw_destroy(TwoRWContext* ctx);
+
+// Multi-machine distributed barrier: called by each node's main thread after
+// local threads are started.  Phase 1: no-op (caller does local sync).
+// Phase 2: sets this node's CXL ready flag and waits for all nodes.
+// Single-machine: no-op.
+void two_rw_node_barrier(TwoRWContext* ctx);
+
+// Multi-machine slave stop: polls CXL global_stop_flag until master sets it,
+// then calls two_rw_stop() to set local stop_flag and join threads.
+// Single-machine: no-op (caller manages stop directly).
+void two_rw_wait_global_stop(TwoRWContext* ctx);
 
 // Print worker exit stats in order 0..m-1.
 // Call after two_rw_stop() (all workers joined).
@@ -434,35 +616,107 @@ void two_rw_print_bucket_stats(TwoRWContext* ctx);
 // Per-Thread Accessor Helpers (inline, used by benchmark code)
 // ============================================================================
 
-// Request Thread j: acquire a block_id from the local cache.
-// Priority: local_stack → drain FreeBlockQueue → global bump allocator → OOM abort.
+// ============================================================================
+// CXL Bitmap batch operations
+// ============================================================================
+
+// Batch allocate up to `count` block_ids from CXL bitmap into LBC.
+// Scans from scan_hint, wraps around once. Returns number allocated.
+inline uint32_t bitmap_alloc_batch(TwoRWContext* ctx, uint32_t client_id,
+                                    uint32_t count) {
+    LocalBlockCache& cache = ctx->local_block_caches[client_id];
+    volatile uint64_t* bmap = ctx->block_bitmap;
+    const uint32_t total_words = ctx->block_bitmap_words;
+    if (!bmap || total_words == 0) return 0;
+
+    uint32_t acquired = 0;
+    uint32_t wi = cache.scan_hint;
+    uint32_t scanned = 0;
+
+    while (acquired < count && scanned < total_words) {
+        if (wi >= total_words) wi = 0;
+        uint64_t word = bmap[wi];
+        if (word != 0) {
+            while (word != 0 && acquired < count) {
+                uint32_t bit = __builtin_ctzll(word);
+                if (atomic_btr(&bmap[wi], bit)) {
+                    uint32_t block_id = wi * 64 + bit;
+                    cache.stack[cache.top++] = block_id;
+                    acquired++;
+                }
+                word &= word - 1;
+            }
+        }
+        wi++;
+        scanned++;
+    }
+    cache.scan_hint = wi < total_words ? wi : 0;
+    return acquired;
+}
+
+// Batch free block_ids back to CXL bitmap.
+inline void bitmap_free_batch(TwoRWContext* ctx,
+                               const uint32_t* ids, uint32_t count) {
+    volatile uint64_t* bmap = ctx->block_bitmap;
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t id = ids[i];
+        uint32_t wi = id / 64;
+        uint32_t bit = id % 64;
+        atomic_bts(&bmap[wi], bit);
+    }
+}
+
+// ============================================================================
+// Drain FreeBlockQueue — with bitmap spill to prevent deadlock
 //
-// The bump allocator path handles PUT of new keys: the block stays in the hash
-// table (block_id_a == 0 returned), so the RT's pre-allocated stock is never
-// recycled back for those ops.  The GlobalIDMap bump counter provides an
-// unlimited supply of fresh blocks up to layout.total_blocks.
+// Phase A: if LBC is full, spill BITMAP_BATCH entries from LBC bottom → bitmap
+// Phase B: drain FBQ → LBC while LBC has room
+// ============================================================================
+inline void two_rw_drain_freeblocks(TwoRWContext* ctx, uint32_t client_id) {
+    LocalBlockCache& cache = ctx->local_block_caches[client_id];
+
+    // Phase A: spill overflow to bitmap
+    if (cache.top >= LOCAL_CACHE_CAP) {
+        uint32_t spill = (cache.top > BITMAP_BATCH) ? BITMAP_BATCH : cache.top;
+        bitmap_free_batch(ctx, cache.stack, spill);
+        cache.top -= spill;
+        if (cache.top > 0)
+            memmove(cache.stack, cache.stack + spill, cache.top * sizeof(uint32_t));
+    }
+
+    // Phase B: drain FBQ into LBC
+    FreeBlockQueue<QUEUE_CAP>& q = ctx->free_block_queues[client_id];
+    uint32_t id;
+    while (cache.top < LOCAL_CACHE_CAP) {
+        if (!q.pop(id)) break;
+        cache.stack[cache.top++] = id;
+    }
+}
+
+// Request Thread j: acquire a block_id from the local cache.
+// Priority: LBC pop → FBQ drain → CXL bitmap batch alloc → OOM abort.
 inline uint32_t two_rw_acquire_block(TwoRWContext* ctx, uint32_t client_id) {
     LocalBlockCache& cache = ctx->local_block_caches[client_id];
 
     // 1. Local stack: fastest path, no shared-memory access
     if (cache.top > 0) return cache.stack[--cache.top];
 
-    // 2. Drain FreeBlockQueue into local stack (up to 256 at once)
+    // 2. Drain FreeBlockQueue into local stack (up to BITMAP_BATCH at once)
     FreeBlockQueue<QUEUE_CAP>& q = ctx->free_block_queues[client_id];
     uint32_t id;
-    while (cache.top < 256) {
+    while (cache.top < BITMAP_BATCH) {
         if (!q.pop(id)) break;
         cache.stack[cache.top++] = id;
     }
     if (cache.top > 0) return cache.stack[--cache.top];
 
-    // 3. Fresh block from global bump counter (new-key INSERT path)
-    uint32_t fresh = ctx->block_alloc_next.fetch_add(1, std::memory_order_relaxed);
-    if (fresh < ctx->layout.total_blocks) return fresh;
+    // 3. Batch allocate from CXL bitmap
+    bitmap_alloc_batch(ctx, client_id, BITMAP_BATCH);
+    if (cache.top > 0) return cache.stack[--cache.top];
 
-    // 4. UnifiedBlockPool exhausted
-    fprintf(stderr, "[RT-%u] UnifiedBlockPool exhausted (total_blocks=%u)\n",
-            client_id, ctx->layout.total_blocks);
+    // 4. Block pool exhausted
+    fprintf(stderr, "[RT-%u] Block pool exhausted (bitmap_words=%u)\n",
+            client_id, ctx->block_bitmap_words);
     abort();
 }
 
@@ -472,12 +726,12 @@ inline UnifiedBlock* two_rw_get_unified_block(TwoRWContext* ctx, uint32_t block_
 }
 
 // Request Thread j: submit request (after filling UnifiedBlock and sfence).
-// Routes to req_producers[client_id * s + sn_id] where sn_id = worker_id / (m/s).
+// Routes to req_producers[client_id * s + sn_id].
+// SN determined via worker_to_sn[] lookup (supports both even and flexible allocation).
 inline bool two_rw_submit(TwoRWContext* ctx, uint32_t client_id,
                            uint32_t block_id, uint32_t worker_id, uint8_t op_type) {
-    const uint32_t s             = ctx->config.num_synchronizers;
-    const uint32_t workers_per_sn = ctx->config.num_workers / s;
-    const uint32_t sn_id         = worker_id / workers_per_sn;
+    const uint32_t s     = ctx->config.num_synchronizers;
+    const uint32_t sn_id = ctx->worker_to_sn[worker_id];
     KVRequest req{};
     req.worker_id = worker_id;
     req.block_id  = block_id;
@@ -485,23 +739,6 @@ inline bool two_rw_submit(TwoRWContext* ctx, uint32_t client_id,
     req.op_type   = op_type;
     req.t1        = __rdtsc();
     return ctx->req_producers[client_id * s + sn_id].enqueue(req);
-}
-
-// Drain recycled block IDs from FreeBlockQueue into the local cache.
-// Must be called by Request Thread while spinning on submit to prevent deadlock:
-//   RT blocked on RequestQueue full → can't call two_rw_acquire_block() →
-//   FreeBlockQueue stays full → RespThread blocked on push() →
-//   ResponseQueues fill → Workers block → WorkerRings fill → SN blocks →
-//   RequestQueues stay full → RT stays blocked (circular).
-// This drain breaks the cycle by keeping FreeBlockQueue consumable.
-inline void two_rw_drain_freeblocks(TwoRWContext* ctx, uint32_t client_id) {
-    LocalBlockCache& cache = ctx->local_block_caches[client_id];
-    FreeBlockQueue<QUEUE_CAP>& q = ctx->free_block_queues[client_id];
-    uint32_t id;
-    while (cache.top < 1024) {
-        if (!q.pop(id)) break;
-        cache.stack[cache.top++] = id;
-    }
 }
 
 // Hash helper: compute worker_id from key

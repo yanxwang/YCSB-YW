@@ -31,22 +31,26 @@ struct ClientPollerState {
 };
 
 void two_rw_poller_run(PollerThreadState* s) {
-    const uint32_t n = s->num_clients;
     const uint32_t m = s->num_workers;
+    // Local client range: only monitor this node's clients
+    const uint32_t c_start = s->global_client_start;
+    const uint32_t c_count = (s->global_client_count > 0) ? s->global_client_count : s->num_clients;
+    const uint32_t c_end   = c_start + c_count;
 
-    std::vector<ClientPollerState> states(n);
-    for (uint32_t j = 0; j < n; j++) {
+    std::vector<ClientPollerState> states(c_count);
+    for (uint32_t j = 0; j < c_count; j++) {
         states[j] = {true, -1, -1};
     }
 
     uint64_t scan_rounds = 0;
     uint64_t uintrs_sent = 0;
 
-    fprintf(stderr, "[RespPoller] Started. Monitoring %u × %u ResponseQueues\n", n, m);
+    fprintf(stderr, "[RespPoller] Started. Monitoring clients [%u..%u) × %u workers\n",
+            c_start, c_end, m);
 
     while (!s->stop_flag->load(std::memory_order_relaxed)) {
-        for (uint32_t j = 0; j < n; j++) {
-            auto& st = states[j];
+        for (uint32_t j = c_start; j < c_end; j++) {
+            auto& st = states[j - c_start];
 
             // Lazily register UINTR sender when Response Thread sets its fd
             int cur_fd = s->resp_uintr_fds[j];
@@ -86,7 +90,7 @@ void two_rw_poller_run(PollerThreadState* s) {
     }
 
     // Cleanup: unregister all UINTR senders
-    for (uint32_t j = 0; j < n; j++) {
+    for (uint32_t j = 0; j < c_count; j++) {
         if (states[j].uipi_index >= 0) {
             uintr_unregister_sender(states[j].uipi_index, 0);
         }
@@ -110,21 +114,25 @@ struct WorkerPollerPerWorker {
 };
 
 void two_rw_worker_poller_run(WorkerPollerThreadState* s) {
-    const uint32_t m = s->num_workers;
+    // Local worker range: only monitor this node's workers
+    const uint32_t w_start = s->global_worker_start;
+    const uint32_t w_count = (s->global_worker_count > 0) ? s->global_worker_count : s->num_workers;
+    const uint32_t w_end   = w_start + w_count;
 
-    std::vector<WorkerPollerPerWorker> states(m);
-    for (uint32_t i = 0; i < m; i++) {
+    std::vector<WorkerPollerPerWorker> states(w_count);
+    for (uint32_t i = 0; i < w_count; i++) {
         states[i] = {true, -1, -1};
     }
 
     uint64_t scan_rounds = 0;
     uint64_t uintrs_sent = 0;
 
-    fprintf(stderr, "[WorkerPoller] Started. Monitoring %u WorkerRings\n", m);
+    fprintf(stderr, "[WorkerPoller] Started. Monitoring workers [%u..%u)\n",
+            w_start, w_end);
 
     while (!s->stop_flag->load(std::memory_order_relaxed)) {
-        for (uint32_t i = 0; i < m; i++) {
-            auto& st = states[i];
+        for (uint32_t i = w_start; i < w_end; i++) {
+            auto& st = states[i - w_start];
 
             // Lazily register UINTR sender when Worker Thread sets its fd
             int cur_fd = s->worker_uintr_fds[i];
@@ -168,7 +176,7 @@ void two_rw_worker_poller_run(WorkerPollerThreadState* s) {
     }
 
     // Cleanup
-    for (uint32_t i = 0; i < m; i++) {
+    for (uint32_t i = 0; i < w_count; i++) {
         if (states[i].uipi_index >= 0) {
             uintr_unregister_sender(states[i].uipi_index, 0);
         }
