@@ -20,6 +20,7 @@ namespace TwoRW {
 void two_rw_synchronizer_run(SyncThreadState* state);
 void two_rw_worker_run(WorkerThreadState* state);
 void two_rw_poller_run(PollerThreadState* state);
+void two_rw_worker_poller_run(WorkerPollerThreadState* state);
 }
 
 namespace TwoRW {
@@ -255,7 +256,7 @@ TwoRWContext* two_rw_init(const TwoRWConfig& cfg) {
     ctx->sync_state_ptrs     = new SyncThreadState*[s]{};
 
     for (uint32_t k = 0; k < s; k++) {
-        const int sn_cpu      = static_cast<int>(k + 1);  // SN_k on CPU k+1
+        const int sn_cpu      = static_cast<int>(k + 2);  // SN_k on CPU k+2 (CPU 0-1 reserved for pollers)
         const int sn_numa     = (numa_available() >= 0) ? numa_node_of_cpu(sn_cpu) : -1;
         const uint32_t w_base = k * wps;
 
@@ -340,7 +341,7 @@ TwoRWContext* two_rw_init(const TwoRWConfig& cfg) {
         }
     }
 
-    // ---- UINTR fd arrays ----
+    // ---- UINTR fd arrays (Response Threads) ----
     ctx->resp_uintr_fds = new int[n];
     ctx->resp_fd_ready  = new std::atomic<bool>[n];
     for (uint32_t j = 0; j < n; j++) {
@@ -348,9 +349,17 @@ TwoRWContext* two_rw_init(const TwoRWConfig& cfg) {
         ctx->resp_fd_ready[j].store(false);
     }
 
+    // ---- UINTR fd arrays (Worker Threads) ----
+    ctx->worker_uintr_fds = new int[m];
+    ctx->worker_fd_ready  = new std::atomic<bool>[m];
+    for (uint32_t i = 0; i < m; i++) {
+        ctx->worker_uintr_fds[i] = -1;
+        ctx->worker_fd_ready[i].store(false);
+    }
+
     // ---- SyncThreadState[s]: one per SN, NUMA-allocated on SN's CPU node ----
     for (uint32_t k = 0; k < s; k++) {
-        const int sn_cpu  = static_cast<int>(k + 1);
+        const int sn_cpu  = static_cast<int>(k + 2);
         const int sn_numa = (numa_available() >= 0) ? numa_node_of_cpu(sn_cpu) : -1;
         const uint32_t w_base = k * wps;
 
@@ -407,24 +416,47 @@ TwoRWContext* two_rw_init(const TwoRWConfig& cfg) {
         ws.resp_producers        = ctx->resp_producers;
         ws.num_clients           = n;
         ws.stats_enabled         = cfg.stats_enabled;
+        ws.use_uintr             = cfg.worker_thread_uses_uintr();
+        ws.worker_uintr_fds      = ctx->worker_uintr_fds;
+        ws.worker_fd_ready       = ctx->worker_fd_ready;
     }
 
-    // ---- PollerThreadState ----
-    ctx->poller_state = new PollerThreadState{};
-    ctx->poller_state->layout          = &ctx->layout;
-    ctx->poller_state->cxl_base        = ctx->cxl_base;
-    ctx->poller_state->stop_flag       = &ctx->stop_flag;
-    ctx->poller_state->num_clients     = n;
-    ctx->poller_state->num_workers     = m;
-    ctx->poller_state->resp_uintr_fds  = ctx->resp_uintr_fds;
-    ctx->poller_state->resp_fd_ready   = ctx->resp_fd_ready;
+    // ---- PollerThreadState (response poller, when has_response_poller) ----
+    if (cfg.has_response_poller()) {
+        ctx->poller_state = new PollerThreadState{};
+        ctx->poller_state->layout          = &ctx->layout;
+        ctx->poller_state->cxl_base        = ctx->cxl_base;
+        ctx->poller_state->stop_flag       = &ctx->stop_flag;
+        ctx->poller_state->num_clients     = n;
+        ctx->poller_state->num_workers     = m;
+        ctx->poller_state->resp_uintr_fds  = ctx->resp_uintr_fds;
+        ctx->poller_state->resp_fd_ready   = ctx->resp_fd_ready;
+    }
+
+    // ---- WorkerPollerThreadState (worker poller, when has_worker_poller) ----
+    if (cfg.has_worker_poller()) {
+        ctx->worker_poller_state = new WorkerPollerThreadState{};
+        ctx->worker_poller_state->layout            = &ctx->layout;
+        ctx->worker_poller_state->cxl_base          = ctx->cxl_base;
+        ctx->worker_poller_state->stop_flag         = &ctx->stop_flag;
+        ctx->worker_poller_state->num_workers       = m;
+        ctx->worker_poller_state->use_local_ring    = cfg.local_workerring;
+        ctx->worker_poller_state->local_rings       = ctx->local_rings;
+        ctx->worker_poller_state->worker_uintr_fds  = ctx->worker_uintr_fds;
+        ctx->worker_poller_state->worker_fd_ready   = ctx->worker_fd_ready;
+    }
 
     return ctx;
 }
 
 // ============================================================================
 // two_rw_start_threads
-// CPU layout: Poller=CPU0, SN_k=CPU(k+1), Workers=CPU[w_base..w_base+m-1]
+// CPU layout:
+//   CPU 0          : Response Poller (if has_response_poller)
+//   CPU 1          : Worker Poller   (if has_worker_poller)
+//   CPU 2..2+s-1   : Synchronizers
+//   CPU w_base..   : Workers (w_base default = 2+s)
+// CPU 0 and 1 are always reserved regardless of poller_mode.
 // ============================================================================
 
 void two_rw_start_threads(TwoRWContext* ctx) {
@@ -432,22 +464,33 @@ void two_rw_start_threads(TwoRWContext* ctx) {
     const uint32_t m  = ctx->config.num_workers;
     const uint32_t s  = ctx->config.num_synchronizers;
     const int w_base  = (ctx->config.worker_cpu_start < 0)
-                        ? static_cast<int>(1 + s)
+                        ? static_cast<int>(2 + s)
                         : ctx->config.worker_cpu_start;
 
-    // Poller on CPU 0
-    ctx->poller_thread = std::thread([ctx]() {
-        CXLBase::set(ctx->cxl_base);
-        pin_current_thread_to_cpu(0);
-        two_rw_poller_run(ctx->poller_state);
-    });
+    // Response Poller on CPU 0 (when active)
+    if (ctx->config.has_response_poller()) {
+        ctx->resp_poller_thread = std::thread([ctx]() {
+            CXLBase::set(ctx->cxl_base);
+            pin_current_thread_to_cpu(0);
+            two_rw_poller_run(ctx->poller_state);
+        });
+    }
 
-    // Synchronizers: SN_k on CPU (k+1)
+    // Worker Poller on CPU 1 (when active)
+    if (ctx->config.has_worker_poller()) {
+        ctx->worker_poller_thread = std::thread([ctx]() {
+            CXLBase::set(ctx->cxl_base);
+            pin_current_thread_to_cpu(1);
+            two_rw_worker_poller_run(ctx->worker_poller_state);
+        });
+    }
+
+    // Synchronizers: SN_k on CPU (k+2)
     ctx->synchronizer_threads.resize(s);
     for (uint32_t k = 0; k < s; k++) {
         ctx->synchronizer_threads[k] = std::thread([ctx, k]() {
             CXLBase::set(ctx->cxl_base);
-            pin_current_thread_to_cpu(static_cast<int>(k + 1));
+            pin_current_thread_to_cpu(static_cast<int>(k + 2));
             two_rw_synchronizer_run(ctx->sync_state_ptrs[k]);
         });
     }
@@ -462,10 +505,11 @@ void two_rw_start_threads(TwoRWContext* ctx) {
         });
     }
 
+    const char* pm = poller_mode_name(ctx->config.poller_mode);
     fprintf(stderr,
-            "[2RW] Threads started: Poller=CPU0, "
-            "SN[0..%u]=CPU[1..%u], Workers=CPU[%d..%d]\n",
-            s - 1, s, w_base, w_base + static_cast<int>(m) - 1);
+            "[2RW] Threads started: poller_mode=%s, "
+            "SN[0..%u]=CPU[2..%u], Workers=CPU[%d..%d]\n",
+            pm, s - 1, 1 + s, w_base, w_base + static_cast<int>(m) - 1);
 }
 
 // ============================================================================
@@ -488,8 +532,11 @@ void two_rw_stop(TwoRWContext* ctx) {
     for (auto& t : ctx->worker_threads)
         if (t.joinable()) t.join();
 
-    if (ctx->poller_thread.joinable())
-        ctx->poller_thread.join();
+    if (ctx->resp_poller_thread.joinable())
+        ctx->resp_poller_thread.join();
+
+    if (ctx->worker_poller_thread.joinable())
+        ctx->worker_poller_thread.join();
 
     // Print final GSN per SN (--verbose only)
     if (ctx->config.verbose) {
@@ -524,8 +571,11 @@ void two_rw_destroy(TwoRWContext* ctx) {
     delete[] ctx->resp_consumers;
     delete[] ctx->resp_uintr_fds;
     delete[] ctx->resp_fd_ready;
+    delete[] ctx->worker_uintr_fds;
+    delete[] ctx->worker_fd_ready;
     delete[] ctx->worker_states;
     delete   ctx->poller_state;
+    delete   ctx->worker_poller_state;
 
     // Local DRAM rings (regular new[], only allocated when local_workerring=true)
     delete[] ctx->local_ring_consumers;
@@ -645,12 +695,13 @@ void two_rw_print_worker_stats(TwoRWContext* ctx) {
     // ── Worker counters (--counters) ──
     if (counters) {
         printf("--- Workers (dequeue ← WorkerRing, enqueue → ResponseQueue) ---\n");
-        printf("  %-8s  %12s  %12s  %12s\n",
-               "Worker", "ops_done", "empty_polls", "resp_fullwaits");
+        printf("  %-8s  %12s  %12s  %12s  %12s\n",
+               "Worker", "ops_done", "empty_polls", "resp_fullwaits", "uintr_wakes");
         for (uint32_t i = 0; i < m; i++) {
             WorkerThreadState& ws = ctx->worker_states[i];
-            printf("  W-%-6u  %12lu  %12lu  %12lu\n",
-                   i, ws.exit_ops_done, ws.exit_empty_polls, ws.exit_resp_fullwaits);
+            printf("  W-%-6u  %12lu  %12lu  %12lu  %12lu\n",
+                   i, ws.exit_ops_done, ws.exit_empty_polls,
+                   ws.exit_resp_fullwaits, ws.exit_uintr_wakeups);
         }
         printf("\n");
     }
@@ -696,15 +747,27 @@ void two_rw_print_worker_stats(TwoRWContext* ctx) {
         }
     }
 
-    // ── Poller counters (--counters) ──
+    // ── Response Poller counters (--counters) ──
     if (counters && ctx->poller_state) {
-        printf("--- Poller (scan ResponseQueues, send UINTR) ---\n");
+        printf("--- Response Poller (scan ResponseQueues, send UINTR) ---\n");
         printf("  scan_rounds:  %lu\n", ctx->poller_state->exit_scan_rounds);
         printf("  uintrs_sent:  %lu\n", ctx->poller_state->exit_uintrs_sent);
         if (ctx->poller_state->exit_uintrs_sent > 0)
             printf("  rounds/uintr: %.1f\n",
                    (double)ctx->poller_state->exit_scan_rounds /
                    ctx->poller_state->exit_uintrs_sent);
+        printf("\n");
+    }
+
+    // ── Worker Poller counters (--counters) ──
+    if (counters && ctx->worker_poller_state) {
+        printf("--- Worker Poller (scan WorkerRings, send UINTR) ---\n");
+        printf("  scan_rounds:  %lu\n", ctx->worker_poller_state->exit_scan_rounds);
+        printf("  uintrs_sent:  %lu\n", ctx->worker_poller_state->exit_uintrs_sent);
+        if (ctx->worker_poller_state->exit_uintrs_sent > 0)
+            printf("  rounds/uintr: %.1f\n",
+                   (double)ctx->worker_poller_state->exit_scan_rounds /
+                   ctx->worker_poller_state->exit_uintrs_sent);
         printf("\n");
     }
 

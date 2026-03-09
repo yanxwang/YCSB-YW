@@ -1,15 +1,23 @@
 #!/usr/bin/env python3
-"""Plot SharedKV 2RW YCSB benchmark results."""
+"""Plot SharedKV 2RW YCSB benchmark results.
+
+Usage:
+    python3 plot_results.py [results_dir] [output_dir]
+
+Defaults to ./results and ./plots relative to this script.
+"""
 
 import os
 import re
+import sys
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.rcParams['font.size'] = 12
 
-RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results")
-OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "plots")
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+RESULTS_DIR = sys.argv[1] if len(sys.argv) > 1 else os.path.join(_SCRIPT_DIR, "results")
+OUTPUT_DIR  = sys.argv[2] if len(sys.argv) > 2 else os.path.join(_SCRIPT_DIR, "plots")
 
 
 def parse_transaction_throughput(filepath):

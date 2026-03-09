@@ -18,6 +18,43 @@
 namespace TwoRW {
 
 // ============================================================================
+// PollerMode — controls which threads use UINTR sleep/wake vs busy-poll
+//
+//   response  : 1 poller on CPU 0, polls ResponseQueues → UINTR Response Threads
+//   worker    : 1 poller on CPU 1, polls WorkerRings → UINTR Worker Threads
+//   dual      : 2 pollers (CPU 0 + CPU 1), both of the above
+//   none      : 0 pollers, all threads busy-poll (Response + Worker)
+//
+// CPU 0 and CPU 1 are always reserved for pollers regardless of mode.
+// Synchronizers start from CPU 2.
+// ============================================================================
+
+enum class PollerMode : uint8_t {
+    RESPONSE = 0,   // default: current behavior
+    WORKER   = 1,
+    DUAL     = 2,
+    NONE     = 3,
+};
+
+static inline const char* poller_mode_name(PollerMode m) {
+    switch (m) {
+        case PollerMode::RESPONSE: return "response";
+        case PollerMode::WORKER:   return "worker";
+        case PollerMode::DUAL:     return "dual";
+        case PollerMode::NONE:     return "none";
+    }
+    return "unknown";
+}
+
+static inline PollerMode parse_poller_mode(const char* s) {
+    if (!s) return PollerMode::RESPONSE;
+    if (strcmp(s, "worker")   == 0) return PollerMode::WORKER;
+    if (strcmp(s, "dual")     == 0) return PollerMode::DUAL;
+    if (strcmp(s, "none")     == 0) return PollerMode::NONE;
+    return PollerMode::RESPONSE;
+}
+
+// ============================================================================
 // TwoRWConfig — Runtime-configurable benchmark parameters
 //
 // Set via:
@@ -57,6 +94,13 @@ struct TwoRWConfig {
     bool     counters_enabled   = false;      // pipeline-wide enqueue/dequeue counters per role
     uint32_t dequeue_batch      = 8;          // SN: items pulled per RequestQueue per round-robin step
     uint32_t read_ack_batch     = 32;         // SN: flush read_idx every N dequeues per queue
+    PollerMode poller_mode      = PollerMode::RESPONSE;  // --poller-mode={response,worker,dual,none}
+
+    // Derived helpers
+    bool has_response_poller() const { return poller_mode == PollerMode::RESPONSE || poller_mode == PollerMode::DUAL; }
+    bool has_worker_poller()   const { return poller_mode == PollerMode::WORKER   || poller_mode == PollerMode::DUAL; }
+    bool resp_thread_uses_uintr() const { return has_response_poller(); }
+    bool worker_thread_uses_uintr() const { return has_worker_poller(); }
 
     // ---- Parsing ----
 
@@ -78,6 +122,8 @@ struct TwoRWConfig {
         get("TWO_RW_WORKER_CPU_START",    c.worker_cpu_start);
         const char* v_lwr = getenv("TWO_RW_LOCAL_WORKERRING");
         if (v_lwr && v_lwr[0] != '0' && v_lwr[0] != '\0') c.local_workerring = true;
+        const char* v_pm = getenv("TWO_RW_POLLER_MODE");
+        if (v_pm) c.poller_mode = parse_poller_mode(v_pm);
         return c;
     }
 
@@ -101,6 +147,10 @@ struct TwoRWConfig {
             match("--queue-depth",         c.queue_depth)         ||
             match("--memory-size",         c.memory_size)         ||
             match("--worker-cpu-start",    c.worker_cpu_start);
+            // --poller-mode is a string, handled separately
+            if (strcmp(argv[i], "--poller-mode") == 0 && i + 1 < argc) {
+                c.poller_mode = parse_poller_mode(argv[i + 1]);
+            }
         }
         return c;
     }
@@ -109,7 +159,7 @@ struct TwoRWConfig {
         const uint32_t s = num_synchronizers;
         const uint32_t wps = (s > 0) ? num_workers / s : num_workers;
         int effective_wcs = (worker_cpu_start < 0)
-                            ? (int)(1 + s) : worker_cpu_start;
+                            ? (int)(2 + s) : worker_cpu_start;
         fprintf(stderr,
             "[2RW Config]\n"
             "  numa_node            = %d\n"
@@ -121,13 +171,15 @@ struct TwoRWConfig {
             "  queue_depth          = %u\n"
             "  memory_size          = %zu MB\n"
             "  worker_cpu_start     = %d  (workers on CPU %d..%d)\n"
-            "  local_workerring     = %s\n",
+            "  local_workerring     = %s\n"
+            "  poller_mode          = %s\n",
             numa_node, num_clients, num_workers,
             s, wps,
             slots_per_client, num_buckets, queue_depth,
             (size_t)(memory_size >> 20),
             worker_cpu_start, effective_wcs, effective_wcs + (int)num_workers - 1,
-            local_workerring ? "yes (DRAM)" : "no (CXL)");
+            local_workerring ? "yes (DRAM)" : "no (CXL)",
+            poller_mode_name(poller_mode));
     }
 
     bool validate() const {
@@ -236,17 +288,23 @@ struct WorkerThreadState {
     CXLSpscProducer<KVResponse, QUEUE_CAP>* resp_producers; // [num_clients * num_workers]
     uint32_t num_clients;
     bool     stats_enabled  = false;   // collect per-op traversal depth stats
+    bool     use_uintr      = false;   // true → register UINTR handler, sleep via uintr_wait
+
+    // UINTR: pointers into TwoRWContext arrays (set during init, used by worker)
+    int*               worker_uintr_fds = nullptr;  // &ctx->worker_uintr_fds[0]
+    std::atomic<bool>* worker_fd_ready  = nullptr;  // &ctx->worker_fd_ready[0]
 
     // ---- Exit stats (written once at thread exit, read by main after join) ----
-    uint64_t       exit_ops_done       = 0;   // total KV operations completed by this worker
-    uint64_t       exit_empty_polls    = 0;   // times worker polled WorkerRing and found it empty
-    uint64_t       exit_resp_fullwaits = 0;   // times worker tried to enqueue a KVResponse to
-                                              // ResponseQueue[client][wid] but the CXL SPSC ring
-                                              // was full, causing the worker to spin-wait.
-                                              // Non-zero values indicate RespThread is too slow
-                                              // to drain responses, back-pressuring the worker
-                                              // and ultimately causing SN ring_fullwaits.
-    WorkerOpStats* exit_stats       = nullptr;  // non-null if stats_enabled; main frees
+    uint64_t       exit_ops_done        = 0;   // total KV operations completed by this worker
+    uint64_t       exit_empty_polls     = 0;   // times worker polled WorkerRing and found it empty
+    uint64_t       exit_resp_fullwaits  = 0;   // times worker tried to enqueue a KVResponse to
+                                               // ResponseQueue[client][wid] but the CXL SPSC ring
+                                               // was full, causing the worker to spin-wait.
+                                               // Non-zero values indicate RespThread is too slow
+                                               // to drain responses, back-pressuring the worker
+                                               // and ultimately causing SN ring_fullwaits.
+    uint64_t       exit_uintr_wakeups   = 0;   // times woken from uintr_wait by WorkerPoller
+    WorkerOpStats* exit_stats           = nullptr;  // non-null if stats_enabled; main frees
 };
 
 struct PollerThreadState {
@@ -258,13 +316,30 @@ struct PollerThreadState {
     // UINTR fds for Response Threads — set by Response Threads, read by Poller
     int*                 resp_uintr_fds;   // [num_clients], -1 if not registered
     std::atomic<bool>*   resp_fd_ready;    // [num_clients]
+    // Sleeping flags — set by Response Threads before uintr_wait, read by Poller
+    // std::atomic<bool>*   resp_sleeping;    // [num_clients]
 
     // ---- Exit counters (written once at thread exit, read by main after join) ----
     uint64_t exit_scan_rounds = 0;   // full scan rounds over all n clients;
                                      // each round checks n×m ResponseQueues for non-empty.
     uint64_t exit_uintrs_sent = 0;   // UINTR IPIs sent to Response Threads.
-                                     // High ratio of scan_rounds/uintrs_sent means
-                                     // Poller is scanning frequently but rarely finding work.
+};
+
+struct WorkerPollerThreadState {
+    TwoRWLayout*         layout;
+    void*                cxl_base;
+    std::atomic<bool>*   stop_flag;
+    uint32_t             num_workers;
+    bool                 use_local_ring = false;  // true → check LocalSpscQueue instead of CXL WorkerRing
+    // Pointers to local DRAM rings (only used when use_local_ring=true)
+    LocalSpscQueue<KVRequest, QUEUE_CAP>* local_rings = nullptr;  // [num_workers]
+    // UINTR fds for Worker Threads — set by Workers, read by WorkerPoller
+    int*                 worker_uintr_fds;  // [num_workers], -1 if not registered
+    std::atomic<bool>*   worker_fd_ready;   // [num_workers]
+
+    // ---- Exit counters ----
+    uint64_t exit_scan_rounds = 0;
+    uint64_t exit_uintrs_sent = 0;
 };
 
 // ============================================================================
@@ -304,9 +379,18 @@ struct TwoRWContext {
     LocalSpscProducer<KVRequest, QUEUE_CAP>* local_ring_producers = nullptr;
     LocalSpscConsumer<KVRequest, QUEUE_CAP>* local_ring_consumers = nullptr;
 
-    // UINTR: Response Threads register their fds here
+    // UINTR: Response Threads register their fds here (used when has_response_poller)
     int*                resp_uintr_fds  = nullptr;  // [num_clients]
     std::atomic<bool>*  resp_fd_ready   = nullptr;  // [num_clients]
+    // Sleeping flag: set by Response Thread before uintr_wait(), cleared after.
+    // Poller checks this to avoid sending IPI to a thread that is busy processing.
+    // std::atomic<bool>*  resp_sleeping   = nullptr;  // [num_clients]
+
+    // UINTR: Worker Threads register their fds here (used when has_worker_poller)
+    int*                worker_uintr_fds = nullptr;  // [num_workers]
+    std::atomic<bool>*  worker_fd_ready  = nullptr;  // [num_workers]
+    // Sleeping flag: set by Worker Thread before uintr_wait(), cleared after.
+    // std::atomic<bool>*  worker_sleeping  = nullptr;  // [num_workers]
 
     // Global block bump allocator — used when LocalBlockCache and FreeBlockQueue are empty.
     // Initialized to n*slots_per_client+1 (beyond the pre-filled range).
@@ -316,13 +400,15 @@ struct TwoRWContext {
     // Thread control
     alignas(64) std::atomic<bool>        stop_flag{false};
     std::vector<std::thread>             synchronizer_threads;  // [s]
-    std::thread                          poller_thread;
+    std::thread                          resp_poller_thread;
+    std::thread                          worker_poller_thread;
     std::vector<std::thread>             worker_threads;        // [m]
 
     // Thread state blobs (heap-allocated, referenced by threads)
-    SyncThreadState**  sync_state_ptrs = nullptr;   // [s]
-    WorkerThreadState* worker_states   = nullptr;   // [m]
-    PollerThreadState* poller_state    = nullptr;
+    SyncThreadState**         sync_state_ptrs       = nullptr;   // [s]
+    WorkerThreadState*        worker_states         = nullptr;   // [m]
+    PollerThreadState*        poller_state          = nullptr;   // response poller
+    WorkerPollerThreadState*  worker_poller_state   = nullptr;   // worker poller
 };
 
 // ============================================================================

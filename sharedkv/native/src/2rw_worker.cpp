@@ -19,6 +19,11 @@
 //   - sfence before updating bucket head / chain pointer (chain integrity)
 //   - sfence inside CXLSpscProducer::enqueue (result visibility)
 //
+// UINTR support (when use_uintr=true, poller_mode=worker|dual):
+//   Worker registers UINTR handler, publishes fd for WorkerPoller.
+//   On empty WorkerRing, sleeps via uintr_wait(0) instead of _mm_pause().
+//   WorkerPoller detects empty→non-empty transition and sends IPI to wake.
+//
 // Stats:
 //   When stats_enabled, each kv_* function records chain traversal depth
 //   into WorkerOpStats (heap-allocated, pointer stored in WorkerThreadState).
@@ -27,12 +32,21 @@
 // ============================================================================
 
 #include "2rw_context.h"
+#include "uintr_threading.h"
 #include <cstdio>
 #include <cstring>
 #include <immintrin.h>
 #include <emmintrin.h>
+#include <x86gprintrin.h>
 
 namespace TwoRW {
+
+// ============================================================================
+// UINTR Handler (empty — interrupt itself wakes uintr_wait)
+// ============================================================================
+
+__attribute__((interrupt, target("general-regs-only")))
+static void worker_uintr_handler(struct __uintr_frame*, unsigned long long) {}
 
 // ============================================================================
 // Inline address helper — avoid casting noise throughout
@@ -222,9 +236,25 @@ void two_rw_worker_run(WorkerThreadState* s) {
     // Allocate stats on heap only when enabled; nullptr = stats off (zero overhead).
     WorkerOpStats* stats = s->stats_enabled ? new WorkerOpStats{} : nullptr;
 
+    // ---- UINTR setup (when poller_mode=worker|dual) ----
+    bool uintr_ok = false;
+    if (s->use_uintr) {
+        if (uintr_register_handler(
+                reinterpret_cast<void*>(worker_uintr_handler), 0) == 0) {
+            long fd = uintr_create_fd(0, 0);
+            if (fd >= 0) {
+                s->worker_uintr_fds[wid] = static_cast<int>(fd);
+                s->worker_fd_ready[wid].store(true, std::memory_order_release);
+                uintr_ok = true;
+            }
+        }
+        if (uintr_ok) _stui();
+    }
+
     uint64_t ops_done       = 0;
     uint64_t empty_polls    = 0;
     uint64_t resp_fullwaits = 0;   // times enqueue to ResponseQueue failed (CXL ring full)
+    uint64_t uintr_wakeups  = 0;
     uint32_t aux;
 
     while (true) {
@@ -284,8 +314,21 @@ void two_rw_worker_run(WorkerThreadState* s) {
                 }
                 if (empty) break;
             }
-            _mm_pause();
+
+            // Sleep via UINTR or busy-poll
+            if (uintr_ok) {
+                uintr_wait(0);
+                uintr_wakeups++;
+            } else {
+                _mm_pause();
+            }
         }
+    }
+
+    // UINTR cleanup
+    if (uintr_ok) {
+        _clui();
+        uintr_unregister_handler(0);
     }
 
     // Store exit stats for the main thread to collect after join.
@@ -293,6 +336,7 @@ void two_rw_worker_run(WorkerThreadState* s) {
     s->exit_ops_done       = ops_done;
     s->exit_empty_polls    = empty_polls;
     s->exit_resp_fullwaits = resp_fullwaits;
+    s->exit_uintr_wakeups  = uintr_wakeups;
     s->exit_stats          = stats;   // transfer ownership; main thread frees
 }
 

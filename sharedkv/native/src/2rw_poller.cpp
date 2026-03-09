@@ -1,12 +1,15 @@
 // ============================================================================
-// SharedKV 2RW — Poller Thread (CPU 1)
+// SharedKV 2RW — Poller Threads
 //
-// Monitors ResponseQueue[j][*] for empty→non-empty transitions.
-// Sends UINTR IPI to Response Thread j when any of its m queues becomes
-// non-empty (edge-triggered, not level-triggered).
+// Response Poller (CPU 0):
+//   Monitors ResponseQueue[j][*] for empty→non-empty transitions.
+//   Sends UINTR IPI to Response Thread j on edge.
+//   Active when poller_mode = response | dual.
 //
-// Per-client polling state is maintained to detect fd changes (Response
-// Thread may re-register UINTR across benchmark runs).
+// Worker Poller (CPU 1):
+//   Monitors WorkerRing[i] for empty→non-empty transitions.
+//   Sends UINTR IPI to Worker Thread i on edge.
+//   Active when poller_mode = worker | dual.
 // ============================================================================
 
 #include "2rw_context.h"
@@ -16,6 +19,10 @@
 #include <thread>
 
 namespace TwoRW {
+
+// ============================================================================
+// Response Poller — polls ResponseQueues, wakes Response Threads via UINTR
+// ============================================================================
 
 struct ClientPollerState {
     bool was_any_empty;       // Previous "any queue empty" state per client
@@ -35,7 +42,7 @@ void two_rw_poller_run(PollerThreadState* s) {
     uint64_t scan_rounds = 0;
     uint64_t uintrs_sent = 0;
 
-    fprintf(stderr, "[Poller] Started. Monitoring %u × %u ResponseQueues\n", n, m);
+    fprintf(stderr, "[RespPoller] Started. Monitoring %u × %u ResponseQueues\n", n, m);
 
     while (!s->stop_flag->load(std::memory_order_relaxed)) {
         for (uint32_t j = 0; j < n; j++) {
@@ -88,7 +95,89 @@ void two_rw_poller_run(PollerThreadState* s) {
     s->exit_scan_rounds = scan_rounds;
     s->exit_uintrs_sent = uintrs_sent;
 
-    fprintf(stderr, "[Poller] Stopped. scan_rounds=%lu  uintrs_sent=%lu\n",
+    fprintf(stderr, "[RespPoller] Stopped. scan_rounds=%lu  uintrs_sent=%lu\n",
+            scan_rounds, uintrs_sent);
+}
+
+// ============================================================================
+// Worker Poller — polls WorkerRings, wakes Worker Threads via UINTR
+// ============================================================================
+
+struct WorkerPollerPerWorker {
+    bool was_empty;
+    int  uipi_index;
+    int  last_known_fd;
+};
+
+void two_rw_worker_poller_run(WorkerPollerThreadState* s) {
+    const uint32_t m = s->num_workers;
+
+    std::vector<WorkerPollerPerWorker> states(m);
+    for (uint32_t i = 0; i < m; i++) {
+        states[i] = {true, -1, -1};
+    }
+
+    uint64_t scan_rounds = 0;
+    uint64_t uintrs_sent = 0;
+
+    fprintf(stderr, "[WorkerPoller] Started. Monitoring %u WorkerRings\n", m);
+
+    while (!s->stop_flag->load(std::memory_order_relaxed)) {
+        for (uint32_t i = 0; i < m; i++) {
+            auto& st = states[i];
+
+            // Lazily register UINTR sender when Worker Thread sets its fd
+            int cur_fd = s->worker_uintr_fds[i];
+            if (cur_fd != st.last_known_fd && cur_fd >= 0 &&
+                s->worker_fd_ready[i].load(std::memory_order_acquire)) {
+
+                if (st.uipi_index >= 0) {
+                    uintr_unregister_sender(st.uipi_index, 0);
+                    st.uipi_index = -1;
+                }
+                long idx = uintr_register_sender(cur_fd, 0);
+                if (idx >= 0) {
+                    st.uipi_index = static_cast<int>(idx);
+                    st.last_known_fd = cur_fd;
+                }
+            }
+
+            // Check if WorkerRing[i] is non-empty
+            bool nonempty;
+            if (s->use_local_ring) {
+                // Local DRAM ring: read write_idx and read_idx atomically
+                auto& ring = s->local_rings[i];
+                uint64_t w = ring.write_idx.load(std::memory_order_acquire);
+                uint64_t r = ring.read_idx.load(std::memory_order_acquire);
+                nonempty = (w > r);
+            } else {
+                // CXL ring: read volatile indices directly (may be stale, but OK for edge detect)
+                auto* wr = s->layout->worker_ring(s->cxl_base, i);
+                nonempty = !wr->is_empty();
+            }
+
+            // Edge: empty → non-empty → send UINTR
+            if (st.was_empty && nonempty && st.uipi_index >= 0) {
+                _senduipi(static_cast<unsigned long long>(st.uipi_index));
+                uintrs_sent++;
+            }
+            st.was_empty = !nonempty;
+        }
+        scan_rounds++;
+        std::this_thread::yield();
+    }
+
+    // Cleanup
+    for (uint32_t i = 0; i < m; i++) {
+        if (states[i].uipi_index >= 0) {
+            uintr_unregister_sender(states[i].uipi_index, 0);
+        }
+    }
+
+    s->exit_scan_rounds = scan_rounds;
+    s->exit_uintrs_sent = uintrs_sent;
+
+    fprintf(stderr, "[WorkerPoller] Stopped. scan_rounds=%lu  uintrs_sent=%lu\n",
             scan_rounds, uintrs_sent);
 }
 

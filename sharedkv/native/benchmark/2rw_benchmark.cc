@@ -167,25 +167,32 @@ static void* response_thread_fn(void* arg) {
     pin_current_thread_to_cpu(a->cpu_id);
     CXLBase::set(ctx->cxl_base);
 
-    // Register UINTR handler
+    // Register UINTR handler (only when response poller is active)
     bool uintr_ok = false;
     long fd = -1;
-    if (uintr_register_handler(
-            reinterpret_cast<void*>(uintr_empty_handler), 0) == 0) {
-        fd = uintr_create_fd(0, 0);
-        if (fd >= 0) {
-            ctx->resp_uintr_fds[cid] = static_cast<int>(fd);
-            ctx->resp_fd_ready[cid].store(true, std::memory_order_release);
-            uintr_ok = true;
-            if (a->verbose)
-                fprintf(stderr, "[RespTh-%u] UINTR fd=%ld, pinned CPU %d\n",
-                        cid, fd, a->cpu_id);
+    if (a->use_uintr) {
+        if (uintr_register_handler(
+                reinterpret_cast<void*>(uintr_empty_handler), 0) == 0) {
+            fd = uintr_create_fd(0, 0);
+            if (fd >= 0) {
+                ctx->resp_uintr_fds[cid] = static_cast<int>(fd);
+                ctx->resp_fd_ready[cid].store(true, std::memory_order_release);
+                uintr_ok = true;
+                if (a->verbose)
+                    fprintf(stderr, "[RespTh-%u] UINTR fd=%ld, pinned CPU %d\n",
+                            cid, fd, a->cpu_id);
+            }
         }
-    }
-    if (!uintr_ok && a->verbose) {
-        fprintf(stderr,
-            "[RespTh-%u] UINTR unavailable — busy-poll fallback, CPU %d\n",
-            cid, a->cpu_id);
+        if (!uintr_ok && a->verbose) {
+            fprintf(stderr,
+                "[RespTh-%u] UINTR unavailable — busy-poll fallback, CPU %d\n",
+                cid, a->cpu_id);
+        }
+    } else {
+        if (a->verbose)
+            fprintf(stderr,
+                "[RespTh-%u] busy-poll mode (poller_mode=%s), CPU %d\n",
+                cid, "worker/none", a->cpu_id);
     }
 
     if (uintr_ok) _stui();
@@ -401,6 +408,7 @@ PhaseResult run_2rw_phase(
         resp_args[j].cpu_id            = cpu_start + static_cast<int>(n) + static_cast<int>(j);
         resp_args[j].measure_latency   = measure_latency;
         resp_args[j].verbose           = ctx->config.verbose;
+        resp_args[j].use_uintr         = ctx->config.resp_thread_uses_uintr();
         resp_args[j].should_stop       = &stop_flag;
         resp_args[j].barrier           = &barrier;
         resp_args[j].ctrl              = &ctrl[j];

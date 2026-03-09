@@ -54,10 +54,11 @@ static void print_usage(const char* prog) {
         "  --num-buckets       N    Hash table buckets (power-of-2)(default: 1048576)\n"
         "  --queue-depth       N    SPSC queue depth (power-of-2)  (default: 1024)\n"
         "  --mem-gb            N    CXL memory size in GB          (default: 16)\n"
-        "  --worker-cpu        N    First CPU for Worker threads   (default: 1+s)\n"
+        "  --worker-cpu        N    First CPU for Worker threads   (default: 2+s)\n"
         "  --dequeue-batch     N    SN dequeue batch size per queue  (default: 8)\n"
         "  --read-ack-batch    N    SN flush read_idx interval       (default: 32)\n"
         "  --local-workerring       WorkerRing on local DRAM instead of CXL\n"
+        "  --poller-mode <mode>     Poller mode: response|worker|dual|none  (default: response)\n"
         "  --stats                  Per-op chain traversal stats + bucket distribution\n"
         "  --counters               Pipeline-wide enqueue/dequeue counters per role\n"
         "  --verbose                Per-thread lifecycle messages + client summary\n"
@@ -182,6 +183,9 @@ int main(int argc, char** argv) {
             cfg.read_ack_batch = next_u32("--read-ack-batch");
         } else if (strcmp(argv[i], "--local-workerring") == 0) {
             cfg.local_workerring = true;
+        } else if (strcmp(argv[i], "--poller-mode") == 0) {
+            if (i + 1 >= argc) { fprintf(stderr, "ERROR: --poller-mode requires an argument\n"); exit(1); }
+            cfg.poller_mode = TwoRW::parse_poller_mode(argv[++i]);
         } else if (strcmp(argv[i], "--stats") == 0) {
             cfg.stats_enabled = true;
         } else if (strcmp(argv[i], "--counters") == 0) {

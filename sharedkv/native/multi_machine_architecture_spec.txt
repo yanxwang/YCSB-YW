@@ -1,0 +1,802 @@
+================================================================================
+SharedKV 2RW Multi-Machine Architecture Specification
+================================================================================
+Version: 1.0
+Date:    2026-03-09
+Status:  Draft — pending review
+
+================================================================================
+TABLE OF CONTENTS
+================================================================================
+
+  1. Overview
+  2. Hardware Topology
+  3. Global vs Local Configuration
+  4. CXL Memory Layout Changes
+  5. Node Roles: Master and Worker Nodes
+  6. Init Flow: Master Init + Slave Attach
+  7. Thread Placement and CPU Pinning
+  8. Request Routing: Client → Synchronizer
+  9. Response Path: Worker → Client
+ 10. Block Allocation Strategy
+ 11. FreeBlockQueue and Block Recycling
+ 12. UINTR / Poller (Local Only)
+ 13. Distributed Barrier: Cross-Machine Startup Sync
+ 14. Stop / Drain Sequence
+ 15. CLI and Config Changes
+ 16. Benchmark Changes
+ 17. File-by-File Change Summary
+ 18. Implementation Order
+
+================================================================================
+1. OVERVIEW
+================================================================================
+
+SharedKV 2RW currently runs on a single machine with all threads (Request
+Threads, Synchronizers, Workers, Response Threads, Pollers) in one process.
+All inter-thread communication goes through CXL SPSC queues in shared memory.
+
+This extension distributes the system across N machines (nodes), all attached
+to the same CXL memory pool via a CXL 3.0 switch fabric. The core invariant:
+
+    ALL CXL SPSC queues, the hash table, the UnifiedBlockPool, and all
+    metadata remain in the shared CXL memory pool, accessible by all nodes
+    at the same physical addresses (different virtual mmap bases, resolved
+    via CXLPtr offsets).
+
+    NO additional transport layer (RDMA, TCP, etc.) is introduced.
+    CXL shared memory IS the transport.
+
+The architecture is a natural scale-out of the single-machine design:
+  - Same pipeline: RT → RequestQueue → SN → WorkerRing → Worker → ResponseQueue → RespTh
+  - Same SPSC queue implementation (NT stores, clflushopt, sfence)
+  - Same zero-copy block swap protocol
+  - Same hash table operations (GET/PUT/DEL on bucket chains)
+  - Producer and consumer of any CXL queue may now be on different machines
+
+================================================================================
+2. HARDWARE TOPOLOGY
+================================================================================
+
+                     CXL 3.0 Switch
+                    ┌──────────────┐
+    Host 0 ─────────┤              ├───────── Shared CXL Memory Pool
+    Host 1 ─────────┤              │          (single contiguous region)
+    Host 2 ─────────┤              │
+      ...           └──────────────┘
+
+  - All hosts see the same CXL physical address space
+  - Each host mmaps the CXL memory at a (potentially different) virtual address
+  - CXLBase::set(mmap_addr) per thread → CXLPtr offsets resolve correctly
+  - CXL non-coherent access semantics (NT stores + sfence for writes,
+    clflushopt + lfence for reads) are correct across hosts — CXL 3.0 switch
+    guarantees store-ordering with fences across hosts
+
+Latency characteristics:
+  - ALL CXL access goes through the switch — even when producer and consumer
+    are on the same host.  There is no "local CXL controller" shortcut in this
+    topology; every read/write traverses the switch to reach the remote CXL
+    memory pool.
+  - Typical round-trip latency: ~300-600ns (varies with switch and device)
+  - Same NT store / clflushopt protocol for all accesses, regardless of which
+    host issues the request.  No same-machine optimization is possible or needed.
+
+================================================================================
+3. GLOBAL vs LOCAL CONFIGURATION
+================================================================================
+
+We introduce the distinction between GLOBAL and LOCAL config:
+
+GLOBAL config (describes the entire cluster, same on all nodes):
+  - N_total     : total number of client thread pairs across all nodes
+  - M_total     : total number of worker threads across all nodes
+  - S_total     : total number of synchronizers across all nodes
+  - num_buckets : hash table size (shared, single instance in CXL)
+  - memory_size : total CXL memory pool size
+  - slots_per_client : blocks pre-allocated per client
+  - queue_depth : SPSC queue capacity
+
+LOCAL config (specific to this node):
+  - node_id     : this node's index (0..num_nodes-1)
+  - role        : "master" or "worker" (node 0 is master, initializes CXL)
+  - sn_range    : [sn_start, sn_start + sn_count)  synchronizers on this node
+  - worker_range: [w_start, w_start + w_count)      workers on this node
+  - client_range: [c_start, c_start + c_count)      clients on this node
+  - cpu_layout  : CPU pinning for local threads
+
+Constraints:
+  - Union of all nodes' sn_range must cover [0, S_total)
+  - Union of all nodes' worker_range must cover [0, M_total)
+  - Union of all nodes' client_range must cover [0, N_total)
+  - Each client (RT + RespTh) is a FULL-KEY-DOMAIN entry point: it can receive
+    requests for ANY key.  The RT hashes the key to determine worker_id and
+    sn_id, then enqueues to the correct RequestQueue.  Clients do NOT partition
+    the key space — every client can route to every SN.
+  - DEFAULT: M_total % S_total == 0 (workers evenly divided among SNs).
+    SN_k manages workers [k * wps, (k+1) * wps) where wps = M_total / S_total.
+  - OPT-IN: Flexible worker-per-SN allocation (--worker-per-sn <list>).
+    When specified, each SN can manage a different number of workers.
+    A global lookup table worker_to_sn[M_total] (uint8_t) maps each global
+    worker_id to its owning SN.  This table is built at init and stored in
+    each node's LOCAL DRAM (not in CXL — it's read-only after init).
+    See Section 8 for routing details.
+  - An SN and its managed workers MUST be on the same node
+    (WorkerRing for local-DRAM mode requires same-machine producer/consumer;
+     co-location is also required because UINTR is CPU-local)
+  - Clients (RT + RespTh) can be on ANY node — they communicate with SNs
+    and Workers purely through CXL queues
+
+Example: 2-node cluster, 8 clients, 4 SNs, 20 workers
+
+  Node 0 (master):
+    sn_range     = [0, 2)       → SN 0, SN 1
+    worker_range = [0, 10)      → Worker 0..9
+    client_range = [0, 4)       → Client 0..3 (RT + RespTh pairs)
+
+  Node 1 (worker):
+    sn_range     = [2, 4)       → SN 2, SN 3
+    worker_range = [10, 20)     → Worker 10..19
+    client_range = [4, 8)       → Client 4..7
+
+  Global: N_total=8, M_total=20, S_total=4, wps=5
+    SN 0 manages Workers 0..4
+    SN 1 manages Workers 5..9
+    SN 2 manages Workers 10..14
+    SN 3 manages Workers 15..19
+
+================================================================================
+4. CXL MEMORY LAYOUT CHANGES
+================================================================================
+
+TwoRWLayout::calculate() currently takes (n_clients, n_workers, n_synchronizers,
+...). For multi-machine, it uses the GLOBAL counts:
+
+    TwoRWLayout::calculate(N_total, M_total, slots_per_client,
+                            n_buckets, total_mem, S_total)
+
+This produces the same layout structure — just with larger queue arrays:
+  - RequestQueue:  N_total * S_total queues
+  - WorkerRing:    M_total queues
+  - ResponseQueue: N_total * M_total queues
+
+The layout offsets are IDENTICAL on all nodes (computed from the same global
+config). Each node resolves them against its own CXLBase virtual address.
+
+No structural changes to TwoRWLayout are needed. Only the inputs change.
+
+Queue indexing remains the same:
+  - RequestQueue[client_id * S_total + sn_id]
+  - WorkerRing[worker_id]
+  - ResponseQueue[client_id * M_total + worker_id]
+
+Note: with large N and M, the total queue memory grows quadratically
+(N * M ResponseQueues). For N=8, M=20: 160 ResponseQueues * ~512KB each
+= ~80 MB. For N=32, M=80: 2560 queues * 512KB = ~1.3 GB. This is acceptable
+for the CXL pool sizes we target (16-64 GB+).
+
+================================================================================
+5. NODE ROLES: MASTER AND WORKER NODES
+================================================================================
+
+MASTER NODE (node_id == 0):
+  1. Allocates and mmaps the CXL memory pool (allocate_cxl_slab)
+  2. Calls init_cxl_memory(): memset(0), init all CXL SPSC queues, write header
+  3. Writes a READY flag in TwoRWHeader (signals other nodes)
+  4. Initializes local structures for its own SN/Worker/Client roles
+  5. Starts its local threads
+
+WORKER NODES (node_id > 0):
+  1. Mmaps the same CXL memory pool (same physical device, same offset+size)
+  2. Spins on TwoRWHeader.magic until READY (master has finished init)
+  3. Does NOT memset or init CXL queues (already done by master)
+  4. Initializes local structures for its own SN/Worker/Client roles
+  5. Starts its local threads
+
+CXL device mapping:
+  - On real CXL hardware: each node opens the same CXL device file
+    (e.g., /dev/dax0.0) and mmaps it at the same size
+  - For testing on single machine: use the same mmap'd region (same process
+    or MAP_SHARED between processes via shm/dax)
+
+================================================================================
+6. INIT FLOW: MASTER INIT + SLAVE ATTACH
+================================================================================
+
+6.1 TwoRWHeader Extension
+--------------------------
+
+Current TwoRWHeader (64B):
+    magic, num_clients, num_workers, slots_per_client, num_buckets,
+    queue_depth, _pad, total_size, _pad[24]
+
+Add fields (still fits in 64B):
+    uint32_t num_synchronizers;   // S_total
+    uint32_t num_nodes;           // N (number of machines)
+    uint32_t ready_flag;          // 0 = not ready, 0xBEEF = all queues initialized
+
+Revised layout (fits in 64B):
+    [0..7]   magic (8B)
+    [8..11]  num_clients (4B)        = N_total
+    [12..15] num_workers (4B)        = M_total
+    [16..19] slots_per_client (4B)
+    [20..23] num_buckets (4B)
+    [24..27] queue_depth (4B)
+    [28..31] num_synchronizers (4B)  = S_total  [NEW]
+    [32..39] total_size (8B)
+    [40..43] num_nodes (4B)                     [NEW]
+    [44..47] ready_flag (4B)                    [NEW]
+    [48..63] _pad (16B)
+
+6.2 Master Init (node 0)
+--------------------------
+
+    void* cxl_base = mmap_cxl_device(device_path, memory_size);
+    TwoRWLayout layout = TwoRWLayout::calculate(N_total, M_total, ...);
+    init_cxl_memory(cxl_base, layout, global_cfg);   // memset + queue init
+    header->ready_flag = 0xBEEF;
+    _mm_sfence();  // ensure ready_flag is visible to other nodes
+
+    // Then: init local structures for this node's roles
+    // (allocate local DRAM arrays, set up producers/consumers, etc.)
+
+6.3 Worker Node Attach (node > 0)
+-----------------------------------
+
+    void* cxl_base = mmap_cxl_device(device_path, memory_size);
+    TwoRWHeader* hdr = (TwoRWHeader*)cxl_base;
+
+    // Spin until master has finished initializing
+    while (hdr->ready_flag != 0xBEEF) {
+        _mm_clflushopt(&hdr->ready_flag);
+        _mm_lfence();
+        _mm_pause();
+    }
+
+    // Validate header matches our expected global config
+    assert(hdr->magic == HEADER_MAGIC);
+    assert(hdr->num_clients == N_total);
+    assert(hdr->num_workers == M_total);
+
+    TwoRWLayout layout = TwoRWLayout::calculate(N_total, M_total, ...);
+    CXLBase::set(cxl_base);
+
+    // Then: init local structures for this node's roles
+
+================================================================================
+7. THREAD PLACEMENT AND CPU PINNING
+================================================================================
+
+Current single-machine CPU layout:
+    CPU 0           : Response Poller
+    CPU 1           : Worker Poller
+    CPU 2..2+s-1    : Synchronizers
+    CPU w_base..    : Workers
+    CPU c_start..   : Request Threads + Response Threads
+
+Multi-machine: each node has its OWN CPU layout, independent of other nodes.
+The global worker_id / sn_id / client_id are logical identifiers that map to
+physical CPUs locally on each node.
+
+Per-node CPU layout:
+    CPU 0            : Response Poller (if this node has clients with UINTR)
+    CPU 1            : Worker Poller (if this node has workers with UINTR)
+    CPU 2..2+local_s-1 : Local synchronizers
+    CPU w_local..    : Local workers
+    CPU c_local..    : Local RT + RespTh
+
+The mapping from global IDs to local CPUs:
+    Local SN index k_local  (0..local_s-1) → CPU 2 + k_local
+    Local Worker index i_local (0..local_m-1) → CPU w_local + i_local
+    Local Client index j_local (0..local_n-1):
+        RT:     CPU c_local + j_local
+        RespTh: CPU c_local + local_n + j_local
+
+Each thread still calls CXLBase::set(cxl_base) and pin_current_thread_to_cpu()
+with its LOCAL CPU number.
+
+The producer/consumer handles (CXLSpscProducer, CXLSpscConsumer) are initialized
+using GLOBAL indices but the handles themselves live in local DRAM:
+
+    // On Node 0, for its Client 0 (global client_id=0):
+    // RT needs producers for ALL S_total RequestQueues:
+    req_producers[0 * S_total + sn_id].attach(
+        layout.request_sub_queue(cxl_base, 0, sn_id));
+
+    // On Node 1, for its SN 2 (global sn_id=2):
+    // SN needs consumers for ALL N_total clients:
+    for (j = 0; j < N_total; j++)
+        sn_req_consumers[j].attach(
+            layout.request_sub_queue(cxl_base, j, 2));
+
+This is exactly the current pattern — just with larger N_total/S_total/M_total.
+
+================================================================================
+8. REQUEST ROUTING: CLIENT → SYNCHRONIZER
+================================================================================
+
+Current routing in two_rw_submit():
+    worker_id = key_hash % m
+    sn_id     = worker_id / wps    // wps = m / s
+
+Multi-machine: IDENTICAL formula with global M_total, S_total:
+    worker_id = key_hash % M_total
+    sn_id     = worker_id / wps    // wps = M_total / S_total
+
+Flexible worker-per-SN routing (opt-in via --worker-per-sn):
+    When workers are not evenly divided among SNs, the simple division
+    worker_id / wps no longer works.  Instead, a lookup table is used:
+
+        worker_id = key_hash % M_total
+        sn_id     = worker_to_sn[worker_id]    // uint8_t[M_total]
+
+    The worker_to_sn[] table is built once at init:
+        - Default (even division): worker_to_sn[w] = w / wps
+        - Custom: parsed from --worker-per-sn "5,5,5,5" (workers per SN)
+
+    Example: --worker-per-sn "6,4,6,4" with S_total=4, M_total=20
+        SN 0 → Workers  0..5   (6 workers)
+        SN 1 → Workers  6..9   (4 workers)
+        SN 2 → Workers 10..15  (6 workers)
+        SN 3 → Workers 16..19  (4 workers)
+        worker_to_sn[] = {0,0,0,0,0,0, 1,1,1,1, 2,2,2,2,2,2, 3,3,3,3}
+
+    Storage: each node builds and stores worker_to_sn[] in LOCAL DRAM
+    at init time (read-only after that, ~M_total bytes, negligible).
+
+    Constraint: sum of --worker-per-sn values MUST equal M_total.
+    Constraint: each SN's workers must form a contiguous range, and all
+    workers of one SN must be on the same node as that SN.
+
+The RT enqueues into RequestQueue[client_id * S_total + sn_id], which is a
+CXL SPSC queue. The target SN may be on a different machine — the CXL write
+travels through the CXL switch to the shared memory pool, and the SN on the
+other machine reads it from CXL.
+
+RT does NOT need to know which machine the SN is on. It simply writes to the
+CXL queue. The SN polls its RequestQueues regardless of where the producer is.
+
+Data flow example (Client 0 on Node 0, SN 2 on Node 1):
+
+    Node 0, RT[0]:
+        block_id = acquire_block(ctx, 0)
+        // fill UnifiedBlock in CXL pool
+        // enqueue block_id to RequestQueue[0][2] in CXL
+        // NT stores + sfence → data visible in CXL pool
+
+    Node 1, SN[2]:
+        // clflushopt + lfence on RequestQueue[0][2]
+        // dequeue KVRequest → read block_id
+        // pass to local WorkerRing[w] (same node as SN)
+
+No cross-machine coordination beyond the CXL queue protocol.
+
+================================================================================
+9. RESPONSE PATH: WORKER → CLIENT
+================================================================================
+
+Worker writes KVResponse to ResponseQueue[client_id][worker_id] in CXL.
+The Response Thread for that client reads it from CXL.
+
+Whether Worker and Response Thread are on the same or different machines,
+the CXL write/read always goes through the switch — same protocol, same
+latency.  There is no same-machine shortcut in this topology.
+
+Data flow example (Worker 12 on Node 1, Client 0 on Node 0):
+
+    Node 1, Worker[12]:
+        resp_prod[0 * M_total + 12].enqueue(resp)
+        // NT stores + sfence to CXL ResponseQueue[0][12]
+
+    Node 0, RespTh[0]:
+        // clflushopt + lfence on ResponseQueue[0][12]
+        // dequeue KVResponse
+        // recycle block_ids via local FreeBlockQueue
+
+================================================================================
+10. BLOCK ALLOCATION STRATEGY
+================================================================================
+
+Two distinct mechanisms exist for block management — do not confuse them:
+
+  (a) ctx->block_alloc_next (std::atomic<uint32_t>, LOCAL DRAM):
+      The actual fast-path bump allocator.  Each call to acquire_block()
+      does fetch_add(1) on this counter to get a fresh block_id.
+      This is the hot path used by every PUT/INSERT.
+
+  (b) GlobalIDMap bitmap (in CXL, TwoRWLayout::globalidmap_off):
+      A reserved bookkeeping bitmap that tracks which block_ids are allocated.
+      Currently barely used — it exists as infrastructure for future features
+      (e.g., crash recovery, defragmentation) but is NOT on the allocation
+      fast path.
+
+For multi-machine, only (a) needs partitioning.  (b) remains unchanged.
+
+Problem: multiple nodes cannot atomically increment a local DRAM counter.
+
+Solution: PRE-PARTITION the block ID space across nodes at init time.
+
+Each node gets a disjoint range of fresh block IDs:
+
+    Node k's client j (global client_id = c_start + j):
+        Pre-filled range: [(c_start+j) * slots_per_client + 1,
+                           (c_start+j+1) * slots_per_client]
+        → loaded into LocalBlockCache[j] at init
+
+    Node k's bump allocator range:
+        bump_start = N_total * slots_per_client + 1 + k * bump_per_node
+        bump_end   = bump_start + bump_per_node - 1
+
+    Where:
+        total_fresh = layout.total_blocks - (N_total * slots_per_client + 1)
+        bump_per_node = total_fresh / num_nodes
+
+    ctx->block_alloc_next.store(bump_start)
+    ctx->block_alloc_end = bump_end     // NEW: upper bound for this node
+
+Each node's bump allocator is LOCAL (std::atomic<uint32_t> in local DRAM).
+No cross-machine atomic needed. Each node allocates from its own disjoint
+range for new-key INSERTs.
+
+If a node exhausts its bump range, it can:
+  (a) Fail the allocation (out of blocks)
+  (b) Request more blocks from a coordinator (future optimization)
+
+For typical workloads (YCSB), the LOAD phase fills the hash table and the
+TRANSACTION phase recycles blocks. Running out of fresh blocks is unlikely
+if the partition is sized correctly.
+
+================================================================================
+11. FREEBLOCKQUEUE AND BLOCK RECYCLING
+================================================================================
+
+FreeBlockQueue is a LOCAL DRAM SPSC queue between Response Thread j and
+Request Thread j — both on the SAME node. No changes needed.
+
+Block recycling flow (same as single-machine):
+    1. Worker returns block_id_a / block_id_b in KVResponse
+    2. RespTh reads KVResponse from CXL, pushes block_ids to local FreeBlockQueue
+    3. RT pops from FreeBlockQueue into LocalBlockCache
+
+The recycled block_ids may have been originally allocated by a different node
+(e.g., a block allocated by Node 0 may end up recycled by Node 1's client
+after a PUT replaces it). This is correct because:
+  - Block IDs are global (index into shared CXL UnifiedBlockPool)
+  - Any node can read/write any block via CXL
+  - The recycled block_id is reused by the same client that received it,
+    which is on the same node as its RT/RespTh pair
+
+Cross-node block migration is implicit and free — no explicit transfer needed.
+
+================================================================================
+12. UINTR / POLLER (LOCAL ONLY)
+================================================================================
+
+UINTR (_senduipi) is a CPU-local hardware interrupt — it cannot cross machine
+boundaries. The poller can only wake threads on the SAME machine.
+
+Per-node poller behavior:
+  - Response Poller on Node k monitors ResponseQueues for Node k's clients:
+      for j in client_range:
+          check ResponseQueue[j][0..M_total-1]
+    This means it monitors queues written by Workers on ALL nodes (since any
+    Worker can write to any client's ResponseQueue). The Poller reads these
+    CXL queues (clflushopt + lfence) and sends UINTR to LOCAL Response Threads.
+
+  - Worker Poller on Node k monitors WorkerRings for Node k's workers:
+      for i in worker_range:
+          check WorkerRing[i]
+    These are written by SNs on the SAME node (SN and Worker co-located).
+
+UINTR fd arrays are LOCAL per node:
+  - resp_uintr_fds[local_n], resp_sleeping[local_n] — indexed by local client index
+  - worker_uintr_fds[local_m], worker_sleeping[local_m] — indexed by local worker index
+
+The Poller and PollerThreadState are LOCAL structures, not shared in CXL.
+
+================================================================================
+13. DISTRIBUTED BARRIER: CROSS-MACHINE STARTUP SYNC
+================================================================================
+
+Current: pthread_barrier for 2n+1 threads (n RT + n RespTh + main).
+Problem: pthread_barrier is process-local, cannot span machines.
+
+Solution: CXL-based barrier using a shared counter in CXL memory.
+
+Reserve a 64B-aligned region in TwoRWHeader (or after it) for sync:
+
+    struct alignas(64) CXLBarrier {
+        volatile uint64_t counter;   // threads that have arrived
+        volatile uint64_t target;    // total threads expected
+        char _pad[48];
+    };
+
+    // Place at a known CXL offset (e.g., header_off + 64)
+
+Init (master, after init_cxl_memory):
+    barrier->counter = 0;
+    barrier->target  = 2 * N_total;  // all RT + RespTh across all nodes
+
+Each thread arrives:
+    // Atomic increment in CXL (requires CAS loop since CXL doesn't support
+    // native atomics from multiple hosts on the same cacheline)
+
+    uint64_t my_slot;
+    do {
+        _mm_clflushopt(&barrier->counter);
+        _mm_lfence();
+        my_slot = barrier->counter;
+        // Attempt CAS: write my_slot+1 if still my_slot
+        // Use NT store + sfence and re-read to verify
+    } while (!cas_cxl(&barrier->counter, my_slot, my_slot + 1));
+
+    // Wait until counter == target
+    while (true) {
+        _mm_clflushopt(&barrier->counter);
+        _mm_lfence();
+        if (barrier->counter >= barrier->target) break;
+        _mm_pause();
+    }
+
+ALTERNATIVE (simpler): use per-node local barriers + a two-phase CXL sync:
+    Phase 1: Each node does pthread_barrier_wait for its local 2*local_n threads
+    Phase 2: Each node's main thread increments a CXL "nodes_ready" counter
+             and spins until nodes_ready == num_nodes
+
+    This is simpler and avoids CXL CAS entirely.
+    The main thread on each node does:
+
+        // After local barrier:
+        _mm_sfence();
+        // Increment CXL nodes_ready (only one writer per node, no CAS needed
+        // if we use per-node slots):
+        cxl_header->node_ready[node_id] = 1;
+        _mm_sfence();
+
+        // Wait until all nodes ready:
+        while (true) {
+            bool all = true;
+            for (int k = 0; k < num_nodes; k++) {
+                _mm_clflushopt(&cxl_header->node_ready[k]);
+                _mm_lfence();
+                if (!cxl_header->node_ready[k]) { all = false; break; }
+            }
+            if (all) break;
+            _mm_pause();
+        }
+
+    Preferred approach: per-node slot (no contention, no CAS).
+
+================================================================================
+14. STOP / DRAIN SEQUENCE
+================================================================================
+
+Current: ctx->stop_flag is a std::atomic<bool> in local DRAM.
+Problem: other nodes cannot see it.
+
+Solution: Move stop_flag to CXL shared memory.
+
+    // In TwoRWHeader or a dedicated control region:
+    volatile uint32_t global_stop_flag;   // 0 = running, 1 = stopping
+
+Master node sets the flag:
+    cxl_header->global_stop_flag = 1;
+    _mm_sfence();
+
+All threads poll it:
+    // Periodically (not every iteration — too expensive across CXL):
+    if (local_stop_flag) ...  // fast local check
+    // Slow CXL check every ~1000 iterations:
+    if (iterations % 1024 == 0) {
+        _mm_clflushopt(&cxl_header->global_stop_flag);
+        _mm_lfence();
+        if (cxl_header->global_stop_flag)
+            local_stop_flag = true;
+    }
+
+Each node joins its own local threads after detecting the stop flag.
+
+Drain sequence (same logical order as single-machine):
+    1. Master sets global_stop_flag = 1
+    2. SNs on all nodes drain their RequestQueues, then exit
+    3. Workers on all nodes drain their WorkerRings, then exit
+    4. Response Threads on all nodes drain ResponseQueues, then exit
+    5. Pollers exit when local stop_flag is set
+
+Cross-node join is not needed — each node joins its own threads.
+The master can wait for all nodes to report "done" via per-node CXL flags.
+
+================================================================================
+15. CLI AND CONFIG CHANGES
+================================================================================
+
+15.1 Config File Format
+------------------------
+
+Each node reads a shared cluster config file (JSON or simple key=value):
+
+    # cluster.conf
+    num_nodes          = 2
+    num_clients_total  = 8
+    num_workers_total  = 20
+    num_synchronizers  = 4
+    num_buckets        = 8388608
+    memory_size_gb     = 64
+    slots_per_client   = 1024
+    queue_depth        = 1024
+
+    # Per-node assignments
+    node.0.sn_start       = 0
+    node.0.sn_count       = 2
+    node.0.worker_start   = 0
+    node.0.worker_count   = 10
+    node.0.client_start   = 0
+    node.0.client_count   = 4
+
+    node.1.sn_start       = 2
+    node.1.sn_count       = 2
+    node.1.worker_start   = 10
+    node.1.worker_count   = 10
+    node.1.client_start   = 4
+    node.1.client_count   = 4
+
+15.2 New CLI Flags
+-------------------
+
+    --cluster-config <path>    Path to cluster config file
+    --node-id <N>              This node's ID (0 = master)
+    --cxl-device <path>        CXL DAX device path (e.g., /dev/dax0.0)
+                               ONLY used in multi-machine mode (when
+                               --cluster-config is specified).  In single-
+                               machine mode, CXL memory is allocated via
+                               mmap(MAP_ANONYMOUS) + mbind(numa_node) as
+                               before — no --cxl-device needed.
+    --worker-per-sn <list>     Comma-separated workers per SN (opt-in).
+                               E.g., "6,4,6,4" for 4 SNs with uneven
+                               distribution.  Default: even division.
+
+    # Local CPU layout overrides (per-node):
+    --local-worker-cpu <N>     First CPU for local workers
+    --local-clients-start <N>  First CPU for local RT+RespTh
+
+15.3 Backward Compatibility
+-----------------------------
+
+When --cluster-config is NOT specified, the system runs in single-node mode
+(current behavior). All existing CLI flags work as before.
+
+    num_nodes = 1, node_id = 0
+    N_total = num_clients, M_total = num_workers, S_total = num_synchronizers
+    All ranges = [0, total)
+
+================================================================================
+16. BENCHMARK CHANGES
+================================================================================
+
+The benchmark (2rw_benchmark_main.cc) changes:
+
+16.1 Multi-Process Model
+--------------------------
+
+Each node runs its own instance of the benchmark binary:
+
+    # Node 0 (master):
+    ./sharedkv_2rw_benchmark --cluster-config cluster.conf --node-id 0 \
+        --cxl-device /dev/dax0.0 --workload workloadc ...
+
+    # Node 1 (worker):
+    ./sharedkv_2rw_benchmark --cluster-config cluster.conf --node-id 1 \
+        --cxl-device /dev/dax0.0 --workload workloadc ...
+
+Both processes use the same binary. Node 0 initializes CXL, Node 1 attaches.
+
+16.2 Workload Distribution
+----------------------------
+
+Each node loads the FULL workload file (same file, same ops).
+Each node's RT slices the ops by its client_range:
+
+    // Current: ops_start = j * slice, where j = local client index
+    // Multi:   ops_start = global_client_id * slice
+
+This ensures the same key distribution across nodes. Keys hash to the correct
+global worker_id regardless of which node's RT submits the request.
+
+16.3 Result Aggregation
+-------------------------
+
+Phase results (throughput, latency) are collected locally on each node.
+For now: each node prints its own results independently.
+Future: master collects results from all nodes via CXL shared counters.
+
+================================================================================
+17. FILE-BY-FILE CHANGE SUMMARY
+================================================================================
+
+native/include/2rw_structs.h:
+  - Extend TwoRWHeader: add num_synchronizers, num_nodes, ready_flag,
+    global_stop_flag, node_ready[MAX_NODES] fields
+  - Add CXL barrier / sync structures
+
+native/include/2rw_layout.h:
+  - No structural changes (uses global N/M/S as before)
+  - May add a control region after header for barrier/sync
+
+native/include/2rw_context.h:
+  - TwoRWConfig: add cluster-config fields (node_id, num_nodes, sn_range,
+    worker_range, client_range, cxl_device_path, worker_per_sn)
+  - Add from_cluster_config() parser
+  - TwoRWContext: add block_alloc_end field for partitioned bump allocator
+  - TwoRWContext: add worker_to_sn[M_total] (uint8_t*) lookup table
+  - TwoRWContext: keep stop_flag local, add pointer to CXL global_stop_flag
+
+native/include/cxl_ptr.h:
+  - No changes (already supports arbitrary mmap base per thread)
+
+native/src/2rw_context.cpp:
+  - two_rw_init(): split into two paths:
+      master_init(): allocate CXL, init memory, init local structures
+      slave_attach(): mmap CXL, wait for ready, init local structures
+  - Both paths share: init_local_structures() which sets up producers,
+    consumers, thread states for THIS node's roles only
+  - allocate_cxl_slab(): add CXL device file path support (dax mmap)
+  - block_alloc_next: partitioned per-node range
+  - Stop flag: local std::atomic + periodic CXL global_stop_flag check
+
+native/src/2rw_synchronizer.cpp:
+  - No logic changes (already uses global worker_id, global SN routing)
+  - Stop flag check: add periodic CXL global_stop_flag poll
+
+native/src/2rw_worker.cpp:
+  - No logic changes (already uses global bucket indexing, global block_ids)
+  - Stop flag check: add periodic CXL global_stop_flag poll
+
+native/src/2rw_poller.cpp:
+  - Poller monitors only THIS node's clients/workers (local indices)
+  - Use local client_range / worker_range for iteration bounds
+
+native/benchmark/2rw_benchmark.cc:
+  - run_2rw_phase(): use local client_range for thread spawning
+  - CPU pinning: use local CPU layout
+  - Barrier: replace pthread_barrier with two-phase (local + CXL)
+
+native/benchmark/2rw_benchmark_main.cc:
+  - Add --cluster-config, --node-id, --cxl-device, --worker-per-sn parsing
+  - Dispatch to master_init or slave_attach based on node_id
+  - Print per-node results
+
+================================================================================
+18. IMPLEMENTATION ORDER
+================================================================================
+
+Phase 1: Config & Data Structures
+  1. Extend TwoRWHeader with new fields (num_synchronizers, num_nodes,
+     ready_flag, global_stop_flag, node_ready[])
+  2. Add cluster config parsing (TwoRWConfig::from_cluster_config)
+  3. Add per-node range fields to TwoRWConfig
+  4. Add block_alloc_end to TwoRWContext
+  5. Build worker_to_sn[] lookup table (default even division + opt-in custom)
+
+Phase 2: Init Flow Split
+  5. Factor two_rw_init() into master_init() + init_local_structures()
+  6. Implement slave_attach() (mmap + wait for ready + init_local_structures)
+  7. Implement CXL device file mmap path (dax support)
+
+Phase 3: Local-Only Thread Spawning
+  8. Modify two_rw_start_threads() to only spawn this node's roles
+  9. Update CPU pinning to use local layout
+ 10. Update Poller to iterate only local client/worker ranges
+ 11. Adapt block allocation to partitioned per-node ranges
+
+Phase 4: Distributed Sync
+ 12. Implement two-phase barrier (local pthread_barrier + CXL node_ready)
+ 13. Implement global stop flag (CXL) + local polling
+
+Phase 5: Benchmark Integration
+ 14. Add CLI flags (--cluster-config, --node-id, --cxl-device)
+ 15. Update run_2rw_phase() for multi-node (local threads, global ops)
+ 16. Test with 2 nodes on same machine (two processes, shared mmap)
+ 17. Test on real multi-host CXL hardware
+
+================================================================================
+END OF SPECIFICATION
+================================================================================

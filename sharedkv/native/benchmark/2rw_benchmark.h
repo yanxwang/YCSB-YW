@@ -4,8 +4,9 @@
 // SharedKV 2RW YCSB Benchmark — Types and Declarations
 //
 // CPU Layout:
-//   CPU  0          : Synchronizer       (TwoRWContext)
-//   CPU  1          : Poller             (TwoRWContext)
+//   CPU  0          : Response Poller    (when poller_mode=response|dual)
+//   CPU  1          : Worker Poller      (when poller_mode=worker|dual)
+//   CPU  2..2+s-1   : Synchronizers      (TwoRWContext)
 //   CPU  worker_cpu..+m-1 : Worker threads (TwoRWContext)
 //   CPU  cpu_start + j         : Request Thread j   (benchmark)
 //   CPU  cpu_start + n + j     : Response Thread j  (benchmark)
@@ -69,6 +70,7 @@ struct RespThreadArgs {
     int                   cpu_id;          // dedicated core: cpu_start + n + client_id
     bool                  measure_latency;
     bool                  verbose = false; // gate UINTR setup messages
+    bool                  use_uintr = true; // false when poller_mode=worker|none
     volatile bool*        should_stop;
     pthread_barrier_t*    barrier;
     ClientControl*        ctrl;
