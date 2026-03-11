@@ -96,6 +96,7 @@ struct TwoRWConfig {
     uint32_t dequeue_batch      = 8;          // SN: items pulled per RequestQueue per round-robin step
     uint32_t read_ack_batch     = 32;         // SN: flush read_idx every N dequeues per queue
     PollerMode poller_mode      = PollerMode::RESPONSE;  // --poller-mode={response,worker,dual,none}
+    bool     worker_check       = false;                 // --worker-check: enable per-op route/block diagnostics
 
     // ---- Multi-machine cluster config ----
     // When cluster_config_path is empty, single-machine mode (backward compat).
@@ -187,6 +188,9 @@ struct TwoRWConfig {
             }
             if (strcmp(argv[i], "--cxl-device") == 0 && i + 1 < argc) {
                 c.cxl_device_path = argv[i + 1];
+            }
+            if (strcmp(argv[i], "--worker-check") == 0) {
+                c.worker_check = true;
             }
             if (strcmp(argv[i], "--worker-per-sn") == 0 && i + 1 < argc) {
                 c.worker_per_sn.clear();
@@ -435,6 +439,7 @@ struct WorkerThreadState {
     uint32_t num_clients;
     bool     stats_enabled  = false;   // collect per-op traversal depth stats
     bool     use_uintr      = false;   // true → register UINTR handler, sleep via uintr_wait
+    bool     worker_check   = false;   // --worker-check: enable per-op route/block integrity checks
 
     // UINTR: pointers into TwoRWContext arrays (set during init, used by worker)
     int*               worker_uintr_fds = nullptr;  // &ctx->worker_uintr_fds[0]
@@ -450,6 +455,10 @@ struct WorkerThreadState {
                                                // to drain responses, back-pressuring the worker
                                                // and ultimately causing SN ring_fullwaits.
     uint64_t       exit_uintr_wakeups   = 0;   // times woken from uintr_wait by WorkerPoller
+    // Routing / data integrity diagnostics (always collected, zero in normal operation)
+    uint64_t       exit_route_mismatches = 0;  // req.worker_id != this worker_id (SN routing bug)
+    uint64_t       exit_block_mismatches = 0;  // recomputed FNV(key)%num_workers != worker_id
+                                               // (stale/wrong block data — CXL visibility issue)
     WorkerOpStats* exit_stats           = nullptr;  // non-null if stats_enabled; main frees
 };
 

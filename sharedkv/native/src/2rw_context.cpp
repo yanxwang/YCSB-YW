@@ -527,6 +527,7 @@ static void init_local_structures(TwoRWContext* ctx) {
         ws.num_clients           = n;
         ws.stats_enabled         = cfg.stats_enabled;
         ws.use_uintr             = cfg.worker_thread_uses_uintr();
+        ws.worker_check          = cfg.worker_check;
         ws.worker_uintr_fds      = ctx->worker_uintr_fds;
         ws.worker_fd_ready       = ctx->worker_fd_ready;
     }
@@ -1032,6 +1033,32 @@ void two_rw_print_worker_stats(TwoRWContext* ctx) {
                    ws.exit_resp_fullwaits, ws.exit_uintr_wakeups);
         }
         printf("\n");
+    }
+
+    // Mismatch summary — always printed when any mismatch was detected
+    {
+        uint64_t total_route = 0, total_block = 0;
+        for (uint32_t i = 0; i < m; i++) {
+            total_route += ctx->worker_states[i].exit_route_mismatches;
+            total_block += ctx->worker_states[i].exit_block_mismatches;
+        }
+        if (total_route > 0 || total_block > 0) {
+            printf("--- Mismatch Diagnostics ---\n");
+            printf("  %-8s  %16s  %16s\n",
+                   "Worker", "route_mismatches", "block_mismatches");
+            for (uint32_t i = 0; i < m; i++) {
+                WorkerThreadState& ws = ctx->worker_states[i];
+                if (ws.exit_route_mismatches == 0 && ws.exit_block_mismatches == 0)
+                    continue;
+                printf("  W-%-6u  %16lu  %16lu\n",
+                       i, ws.exit_route_mismatches, ws.exit_block_mismatches);
+            }
+            printf("  TOTAL     %16lu  %16lu\n", total_route, total_block);
+            printf("  route_mismatches: req.worker_id != worker_id (SN routing bug)\n");
+            printf("  block_mismatches: recomputed FNV(key)%%m != worker_id"
+                   " (stale/wrong CXL block data)\n");
+            printf("\n");
+        }
     }
 
     for (uint32_t i = 0; i < m; i++) {

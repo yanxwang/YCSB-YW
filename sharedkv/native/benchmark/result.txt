@@ -1,79 +1,46 @@
-root@debian-6:~/YCSB-YW/sharedkv/native/benchmark# gdb -p 92392
-GNU gdb (Debian 16.3-1) 16.3
-Copyright (C) 2024 Free Software Foundation, Inc.
-License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>
-This is free software: you are free to change and redistribute it.
-There is NO WARRANTY, to the extent permitted by law.
-Type "show copying" and "show warranty" for details.
-This GDB was configured as "x86_64-linux-gnu".
-Type "show configuration" for configuration details.
-For bug reporting instructions, please see:
-<https://www.gnu.org/software/gdb/bugs/>.
-Find the GDB manual and other documentation resources online a--Type <RET> for more, q to quit, c to continue without paging--
-t:
-    <http://www.gnu.org/software/gdb/documentation/>.
+[Main] ===== TRANSACTION PHASE =====
+[RespTh-0] UINTR fd=4, pinned CPU 15
 
-For help, type "help".
-Type "apropos word" to search for commands related to "word".
-Attaching to process 92392
-[New LWP 92500]
-[New LWP 92499]
-[New LWP 92486]
-[New LWP 92485]
-[New LWP 92484]
-[New LWP 92483]
-[New LWP 92482]
---Type <RET> for more, q to quit, c to continue without paging--
-[New LWP 92481]
-[New LWP 92480]
-[New LWP 92479]
-[New LWP 92478]
-[Thread debugging using libthread_db enabled]
-Using host libthread_db library "/lib/x86_64-linux-gnu/libthread_db.so.1".
-__syscall_cancel_arch ()
-    at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
-
-warning: 56     ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S: No such file or directory
-(gdb) info threads
-  Id   Target Id                                           Frame 
-* 1    Thread 0x7f9da1cd0780 (LWP 92392) "sharedkv_2rw_be" __syscall_cancel_arch ()
-    at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
-  2    Thread 0x7f9d9ccc36c0 (LWP 92500) "sharedkv_2rw_be" CXLSpscProducer<TwoRW::KVRequest, 4096ul>::enqueue (
-    this=0x55921b230830, item=...)
-    at /root/YCSB-YW/sharedkv/native/benchmark/../include/cxl_spsc_queue.h:201
-  3    Thread 0x7f9d9d4c46c0 (LWP 92499) "sharedkv_2rw_be" CXLSpscConsumer<TwoRW::KVResponse, 4096ul>::dequeue_batch_pipelined (this=0x55921ac99b60, items=0x7f9d9d4c3b40, max_count=8)
---Type <RET> for more, q to quit, c to continue without paging--
-    at /root/YCSB-YW/sharedkv/native/benchmark/../include/cxl_spsc_queue.h:435
-  4    Thread 0x7f9d9dcc56c0 (LWP 92486) "sharedkv_2rw_be" TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (
-    this=0x55921ac42428, item=...)
-    at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:123
-  5    Thread 0x7f9d9e4c66c0 (LWP 92485) "sharedkv_2rw_be" 0x0000558f65de3b74 in TwoRW::kv_put (req=..., 
-    base=0x7f8ccec35000, buckets=0x7f8cc9c00040, 
-    num_buckets=8388608, stats=0x0)
-    at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:106
-  6    Thread 0x7f9d9ecc76c0 (LWP 92484) "sharedkv_2rw_be" 0x0--Type <RET> for more, q to quit, c to continue without paging--
-000558f65de4a75 in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x55921ac423f8, item=...)
-    at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:124
-  7    Thread 0x7f9d9f4c86c0 (LWP 92483) "sharedkv_2rw_be" 0x0000558f65de4a75 in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x55921ac423e0, item=...)
-    at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:124
-  8    Thread 0x7f9d9fcc96c0 (LWP 92482) "sharedkv_2rw_be" 0x0000558f65de4a75 in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x55921ac423c8, item=...)
-    at /root/YCSB-YW/sharedkv/native/benchmark/../include/loca--Type <RET> for more, q to quit, c to continue without paging--
-l_spsc_queue.h:124
-  9    Thread 0x7f9da04ca6c0 (LWP 92481) "sharedkv_2rw_be" 0x0000558f65de4a75 in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x55921ac423b0, item=...)
-    at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:124
-  10   Thread 0x7f9da0ccb6c0 (LWP 92480) "sharedkv_2rw_be" 0x0000558f65dcaf1a in std::__atomic_base<bool>::load (
-    this=0x7f9da2260200, __m=std::memory_order_acquire)
-    at /usr/include/c++/14/bits/atomic_base.h:497
-  11   Thread 0x7f9da14cc6c0 (LWP 92479) "sharedkv_2rw_be" 0x0000558f65de4a75 in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x55921ac42380, item=...)
---Type <RET> for more, q to quit, c to continue without paging--
-    at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:124
-  12   Thread 0x7f9da1ccd6c0 (LWP 92478) "sharedkv_2rw_be" 0x0000558f65de36e7 in std::__atomic_base<unsigned long>::load (
-    this=0x55935f151640, __m=std::memory_order_acquire)
-    at /usr/include/c++/14/bits/atomic_base.h:497
-(gdb) 
-
-
-root@debian-6:~/YCSB-YW/sharedkv/native/benchmark# gdb -p 88956
+===== PIPELINE DIAGNOSTIC (SIGUSR1) =====
+RequestQueues [n=2 × s=2]:
+  ReqQ[c0,sn0]: fill=15 (w=2539085 r=2539070)
+  ReqQ[c0,sn1]: fill=4096 (w=2539016 r=2534920)
+  ReqQ[c1,sn0]: fill=9 (w=2434004 r=2433995)
+  ReqQ[c1,sn1]: fill=4127 (w=4127 r=0)
+WorkerRings [m=16]:
+  WR[0]: fill=0 (w=621758 r=621758)
+  WR[1]: fill=0 (w=621974 r=621974)
+  WR[2]: fill=0 (w=621425 r=621425)
+  WR[3]: fill=0 (w=621642 r=621642)
+  WR[4]: fill=0 (w=621449 r=621449)
+  WR[5]: fill=0 (w=621446 r=621446)
+  WR[6]: fill=0 (w=621892 r=621892)
+  WR[7]: fill=0 (w=621503 r=621503)
+  WR[8]: fill=0 (w=0 r=0)
+  WR[9]: fill=0 (w=0 r=0)
+  WR[10]: fill=0 (w=0 r=0)
+  WR[11]: fill=0 (w=0 r=0)
+  WR[12]: fill=0 (w=0 r=0)
+  WR[13]: fill=0 (w=0 r=0)
+  WR[14]: fill=0 (w=0 r=0)
+  WR[15]: fill=0 (w=0 r=0)
+ResponseQueues [n=2 × m=16]:
+  RespQ[c1,w8]: fill=23 (w=386 r=363)
+  RespQ[c1,w9]: fill=18446744073709248317 (w=0 r=303299) FULL
+  RespQ[c1,w10]: fill=16 (w=384 r=368)
+  RespQ[c1,w11]: fill=18446744073709249719 (w=381 r=302278) FULL
+  RespQ[c1,w14]: fill=18446744073709247885 (w=0 r=303731) FULL
+  RespQ[c1,w15]: fill=18446744073709247867 (w=0 r=303749) FULL
+FreeBlockQueues [n=2]:
+  FBQ[c0]: fill=0 (w=65785 r=65785)
+  FBQ[c1]: fill=0 (w=0 r=0)
+LocalBlockCaches [n=2]:
+  Cache[c0]: top=163
+  Cache[c1]: top=1024
+Bitmap: free=16945057 / total=26812002
+===== END DIAGNOSTIC =====
+...
+root@debian-6:~/YCSB-YW/sharedkv/native/benchmark# gdb -p $(pgrep sharedkv)
 GNU gdb (Debian 16.3-1) 16.3
 Copyright (C) 2024 Free Software Foundation, Inc.
 License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>
@@ -90,20 +57,21 @@ Find the GDB manual and other documentation resources online at:
 
 For help, type "help".
 Type "apropos word" to search for commands related to "word".
-Attaching to process 88956
-[New LWP 89007]
+Attaching to process 94949
+[New LWP 95152]
 --Type <RET> for more, q to quit, c to continue without paging--
-[New LWP 89006]
-[New LWP 89005]
-[New LWP 89004]
-[New LWP 89003]
-[New LWP 89002]
-[New LWP 89001]
-[New LWP 89000]
-[New LWP 88999]
-[New LWP 88998]
+[New LWP 95151]
+[New LWP 95065]
+[New LWP 95064]
+[New LWP 95063]
+[New LWP 95062]
+[New LWP 95061]
+[New LWP 95060]
+[New LWP 95059]
+[New LWP 95058]
+[New LWP 95057]
 --Type <RET> for more, q to quit, c to continue without paging--
-[New LWP 88997]
+[New LWP 95056]
 [Thread debugging using libthread_db enabled]
 Using host libthread_db library "/lib/x86_64-linux-gnu/libthread_db.so.1".
 __syscall_cancel_arch ()
@@ -112,34 +80,578 @@ __syscall_cancel_arch ()
 warning: 56     ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S: No such file or directory
 (gdb) info threads
   Id   Target Id                                           Frame 
-* 1    Thread 0x7fe48ca2d780 (LWP 88956) "sharedkv_2rw_be" __syscall_cancel_arch ()
+* 1    Thread 0x7f5f80158780 (LWP 94949) "sharedkv_2rw_be" __syscall_cancel_arch ()
     at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
-  2    Thread 0x7fe487a206c0 (LWP 89007) "sharedkv_2rw_be" CXLSpscProducer<TwoRW::KVRequest, 4096ul>::enqueue (this=0x561110588860, 
-    item=...)
+  2    Thread 0x7f5f7a94a6c0 (LWP 95152) "sharedkv_2rw_be" CXLSpscProducer<TwoRW::KVRequest, 4096ul>::enqueue (
+    this=0x55cf11f56848, item=...)
     at /root/YCSB-YW/sharedkv/native/benchmark/../include/cxl_spsc_queue.h:201
 --Type <RET> for more, q to quit, c to continue without paging--
-  3    Thread 0x7fe4882216c0 (LWP 89006) "sharedkv_2rw_be" CXLSpscConsumer<TwoRW::KVResponse, 4096ul>::dequeue_batch_pipelined (
-    this=0x56110fff1d88, items=0x7fe488220b40, max_count=8)
+  3    Thread 0x7f5f7b14b6c0 (LWP 95151) "sharedkv_2rw_be" CXLSpscConsumer<TwoRW::KVResponse, 4096ul>::dequeue_batch_pipelined (this=0x55cf119bfc08, items=0x7f5f7b14ab40, max_count=8)
     at /root/YCSB-YW/sharedkv/native/benchmark/../include/cxl_spsc_queue.h:435
-  4    Thread 0x7fe488a226c0 (LWP 89005) "sharedkv_2rw_be" _mm_pause () at /usr/lib/gcc/x86_64-linux-gnu/14/include/xmmintrin.h:1338
-  5    Thread 0x7fe4892236c0 (LWP 89004) "sharedkv_2rw_be" 0x0000560e4a728a75 in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::d--Type <RET> for more, q to quit, c to continue without paging--
-equeue (this=0x56110ff9a4d0, item=...)
+  4    Thread 0x7f5f7b94c6c0 (LWP 95065) "sharedkv_2rw_be" 0x000055cc5e8f236f in TwoRW::two_rw_worker_run (
+    s=0x55cf11965820)
+    at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:294
+  5    Thread 0x7f5f7c14d6c0 (LWP 95064) "sharedkv_2rw_be" 0x0--Type <RET> for more, q to quit, c to continue without paging--
+00055cc5e8f2b6d in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x55cf11968410, item=...)
     at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:124
-  6    Thread 0x7fe489a246c0 (LWP 89003) "sharedkv_2rw_be" 0x0000560e4a728a75 in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x56110ff9a4b8, item=...)
+  6    Thread 0x7f5f7c94e6c0 (LWP 95063) "sharedkv_2rw_be" 0x000055cc5e8f2b6d in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x55cf119683f8, item=...)
     at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:124
-  7    Thread 0x7fe48a2256c0 (LWP 89002) "sharedkv_2rw_be" _mm_paus--Type <RET> for more, q to quit, c to continue without paging--
-e () at /usr/lib/gcc/x86_64-linux-gnu/14/include/xmmintrin.h:1338
-  8    Thread 0x7fe48aa266c0 (LWP 89001) "sharedkv_2rw_be" 0x0000560e4a728a75 in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x56110ff9a488, item=...)
+  7    Thread 0x7f5f7d14f6c0 (LWP 95062) "sharedkv_2rw_be" std--Type <RET> for more, q to quit, c to continue without paging--
+::atomic<bool>::load (this=0x97b89, __m=21968)
+    at /usr/include/c++/14/atomic:116
+  8    Thread 0x7f5f7d9506c0 (LWP 95061) "sharedkv_2rw_be" 0x000055cc5e8f2b6d in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x55cf119683c8, item=...)
     at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:124
-  9    Thread 0x7fe48b2276c0 (LWP 89000) "sharedkv_2rw_be" 0x0000560e4a728a75 in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x56110ff9a470, item=...)
+  9    Thread 0x7f5f7e1516c0 (LWP 95060) "sharedkv_2rw_be" 0x000055cc5e8f2b6d in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x55cf119683b0, item=...)
 --Type <RET> for more, q to quit, c to continue without paging--
     at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:124
-  10   Thread 0x7fe48ba286c0 (LWP 88999) "sharedkv_2rw_be" 0x0000560e4a728a75 in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x56110ff9a458, item=...)
+  10   Thread 0x7f5f7e9526c0 (LWP 95059) "sharedkv_2rw_be" 0x000055cc5e8f2b69 in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x55cf11968398, item=...)
     at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:124
-  11   Thread 0x7fe48c2296c0 (LWP 88998) "sharedkv_2rw_be" TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (
+  11   Thread 0x7f5f7f1536c0 (LWP 95058) "sharedkv_2rw_be" 0x000055cc5e8f2b6d in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x55cf11968380, item=...)
 --Type <RET> for more, q to quit, c to continue without paging--
-    this=0x56110ff9a440, item=...)
-    at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:125
-  12   Thread 0x7fe48ca2a6c0 (LWP 88997) "sharedkv_2rw_be" CXLSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue_batch_pipelined (
-    this=0x7fe48cfba000, items=0x7fe478000c80, max_count=64)
+    at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:124
+  12   Thread 0x7f5f7f9546c0 (LWP 95057) "sharedkv_2rw_be" CXLSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue_batch_pipelined (this=0x7f5f806e7018, items=0x7f5f6c000c80, max_count=8)
     at /root/YCSB-YW/sharedkv/native/benchmark/../include/cxl_spsc_queue.h:435
+  13   Thread 0x7f5f801556c0 (LWP 95056) "sharedkv_2rw_be" 0x00007f5f803458c7 in __GI_sched_yield ()
+    at ../sysdeps/unix/syscall-template.S:120
+(gdb) thread apply all bt
+
+Thread 13 (Thread 0x7f5f801556c0 (LWP 95056) "sharedkv_2rw_be"):
+#0  0x00007f5f803458c7 in __GI_sched_yield () at ../sysdeps/unix/syscall-template.S:120
+#1  0x000055cc5e8e4dd1 in __gthread_yield () at /usr/include/x86_64-linux-gnu/c++/14/bits/gthr-default.h:706
+#2  0x000055cc5e8e4ddc in std::this_thread::yield () at /usr/include/c++/14/bits/std_thread.h:375
+#3  0x000055cc5e8f32c0 in TwoRW::two_rw_poller_run (s=0x55d055--Type <RET> for more, q to quit, c to continue without paging--
+ce70b0) at /root/YCSB-YW/sharedkv/native/src/2rw_poller.cpp:89
+#4  0x000055cc5e8ea054 in operator() (__closure=0x55cc89206018) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:713
+#5  0x000055cc5e8ecb90 in std::__invoke_impl<void, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
+#6  0x000055cc5e8eca9c in std::__invoke<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(struct {...} &&) (__fn=...)--Type <RET> for more, q to quit, c to continue without paging--
+ at /usr/include/c++/14/bits/invoke.h:96
+#7  0x000055cc5e8ec950 in std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > >::_M_invoke<0>(std::_Index_tuple<0>) (this=0x55cc89206018) at /usr/include/c++/14/bits/std_thread.h:301
+#8  0x000055cc5e8ec8a0 in std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > >::operator()(void) (this=0x55cc89206018) at /usr/include/c++/14/bits/std_thread.h:308
+#9  0x000055cc5e8ec830 in std::thread::_State_impl<std::thread--Type <RET> for more, q to quit, c to continue without paging--
+::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > > >::_M_run(void) (this=0x55cc89206010) at /usr/include/c++/14/bits/std_thread.h:253
+#10 0x00007f5f80550224 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#11 0x00007f5f802dfb7b in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+#12 0x00007f5f8035d7b8 in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+--Type <RET> for more, q to quit, c to continue without paging--
+Thread 12 (Thread 0x7f5f7f9546c0 (LWP 95057) "sharedkv_2rw_be"):
+#0  CXLSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue_batch_pipelined (this=0x7f5f806e7018, items=0x7f5f6c000c80, max_count=8) at /root/YCSB-YW/sharedkv/native/benchmark/../include/cxl_spsc_queue.h:435
+#1  0x000055cc5e8f05f9 in TwoRW::two_rw_synchronizer_run (s=0x7f5f80157000) at /root/YCSB-YW/sharedkv/native/src/2rw_synchronizer.cpp:130
+#2  0x000055cc5e8ea0fa in operator() (__closure=0x55cf17866b78--Type <RET> for more, q to quit, c to continue without paging--
+) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:733
+#3  0x000055cc5e8ecb16 in std::__invoke_impl<void, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
+#4  0x000055cc5e8ec9f6 in std::__invoke<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(struct {...} &&) (__fn=...) at /usr/include/c++/14/bits/invoke.h:96
+#5  0x000055cc5e8ec8f8 in std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > >::_M_in--Type <RET> for more, q to quit, c to continue without paging--
+voke<0>(std::_Index_tuple<0>) (this=0x55cf17866b78) at /usr/include/c++/14/bits/std_thread.h:301
+#6  0x000055cc5e8ec868 in std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > >::operator()(void) (this=0x55cf17866b78) at /usr/include/c++/14/bits/std_thread.h:308
+#7  0x000055cc5e8ec7f0 in std::thread::_State_impl<std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > > >::_M_run(void) (this=0x55cf17866b70) at /usr/include/c++/14/bits/std_thread.h:253
+--Type <RET> for more, q to quit, c to continue without paging--
+#8  0x00007f5f80550224 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007f5f802dfb7b in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+#10 0x00007f5f8035d7b8 in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 11 (Thread 0x7f5f7f1536c0 (LWP 95058) "sharedkv_2rw_be"):
+#0  0x000055cc5e8f2b6d in TwoRW::LocalSpscConsumer<TwoRW::KVRe--Type <RET> for more, q to quit, c to continue without paging--
+quest, 4096ul>::dequeue (this=0x55cf11968380, item=...) at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:124
+#1  0x000055cc5e8f2393 in TwoRW::two_rw_worker_run (s=0x55cf119654a0) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:295
+#2  0x000055cc5e8ea15d in operator() (__closure=0x55d055cf72d8) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:744
+#3  0x000055cc5e8ecad9 in std::__invoke_impl<void, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_ot--Type <RET> for more, q to quit, c to continue without paging--
+her, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
+#4  0x000055cc5e8ec9a3 in std::__invoke<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(struct {...} &&) (__fn=...) at /usr/include/c++/14/bits/invoke.h:96
+#5  0x000055cc5e8ec8cc in std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > >::_M_invoke<0>(std::_Index_tuple<0>) (this=0x55d055cf72d8) at /usr/include/c++/14/bits/std_thread.h:301
+#6  0x000055cc5e8ec84c in std::thread::_Invoker<std::tuple<Two--Type <RET> for more, q to quit, c to continue without paging--
+RW::two_rw_start_threads(TwoRWContext*)::<lambda()> > >::operator()(void) (this=0x55d055cf72d8) at /usr/include/c++/14/bits/std_thread.h:308
+#7  0x000055cc5e8ec7d0 in std::thread::_State_impl<std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > > >::_M_run(void) (this=0x55d055cf72d0) at /usr/include/c++/14/bits/std_thread.h:253
+#8  0x00007f5f80550224 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007f5f802dfb7b in start_thread (arg=<optimized out>) a--Type <RET> for more, q to quit, c to continue without paging--
+t ./nptl/pthread_create.c:448
+#10 0x00007f5f8035d7b8 in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 10 (Thread 0x7f5f7e9526c0 (LWP 95059) "sharedkv_2rw_be"):
+#0  0x000055cc5e8f2b69 in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x55cf11968398, item=...) at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:124
+--Type <RET> for more, q to quit, c to continue without paging--
+#1  0x000055cc5e8f2393 in TwoRW::two_rw_worker_run (s=0x55cf11965520) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:295
+#2  0x000055cc5e8ea15d in operator() (__closure=0x55cc89164a38) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:744
+#3  0x000055cc5e8ecad9 in std::__invoke_impl<void, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
+#4  0x000055cc5e8ec9a3 in std::__invoke<TwoRW::two_rw_start_th--Type <RET> for more, q to quit, c to continue without paging--
+reads(TwoRWContext*)::<lambda()> >(struct {...} &&) (__fn=...) at /usr/include/c++/14/bits/invoke.h:96
+#5  0x000055cc5e8ec8cc in std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > >::_M_invoke<0>(std::_Index_tuple<0>) (this=0x55cc89164a38) at /usr/include/c++/14/bits/std_thread.h:301
+#6  0x000055cc5e8ec84c in std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > >::operator()(void) (this=0x55cc89164a38) at /usr/include/c++/14/bits/std_thread.h:308
+--Type <RET> for more, q to quit, c to continue without paging--
+#7  0x000055cc5e8ec7d0 in std::thread::_State_impl<std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > > >::_M_run(void) (this=0x55cc89164a30) at /usr/include/c++/14/bits/std_thread.h:253
+#8  0x00007f5f80550224 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007f5f802dfb7b in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+#10 0x00007f5f8035d7b8 in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+--Type <RET> for more, q to quit, c to continue without paging--
+
+Thread 9 (Thread 0x7f5f7e1516c0 (LWP 95060) "sharedkv_2rw_be"):
+#0  0x000055cc5e8f2b6d in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x55cf119683b0, item=...) at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:124
+#1  0x000055cc5e8f2393 in TwoRW::two_rw_worker_run (s=0x55cf119655a0) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:295
+--Type <RET> for more, q to quit, c to continue without paging--
+#2  0x000055cc5e8ea15d in operator() (__closure=0x55cc8915f198) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:744
+#3  0x000055cc5e8ecad9 in std::__invoke_impl<void, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
+#4  0x000055cc5e8ec9a3 in std::__invoke<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(struct {...} &&) (__fn=...) at /usr/include/c++/14/bits/invoke.h:96
+#5  0x000055cc5e8ec8cc in std::thread::_Invoker<std::tuple<Two--Type <RET> for more, q to quit, c to continue without paging--
+RW::two_rw_start_threads(TwoRWContext*)::<lambda()> > >::_M_invoke<0>(std::_Index_tuple<0>) (this=0x55cc8915f198) at /usr/include/c++/14/bits/std_thread.h:301
+#6  0x000055cc5e8ec84c in std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > >::operator()(void) (this=0x55cc8915f198) at /usr/include/c++/14/bits/std_thread.h:308
+#7  0x000055cc5e8ec7d0 in std::thread::_State_impl<std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > > >::_M_run(void) (this=0x55cc8915f190) at /u--Type <RET> for more, q to quit, c to continue without paging--
+sr/include/c++/14/bits/std_thread.h:253
+#8  0x00007f5f80550224 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007f5f802dfb7b in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+#10 0x00007f5f8035d7b8 in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 8 (Thread 0x7f5f7d9506c0 (LWP 95061) "sharedkv_2rw_be"):
+--Type <RET> for more, q to quit, c to continue without paging--
+#0  0x000055cc5e8f2b6d in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x55cf119683c8, item=...) at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:124
+#1  0x000055cc5e8f2393 in TwoRW::two_rw_worker_run (s=0x55cf11965620) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:295
+#2  0x000055cc5e8ea15d in operator() (__closure=0x55cf13148548) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:744
+#3  0x000055cc5e8ecad9 in std::__invoke_impl<void, TwoRW::two_--Type <RET> for more, q to quit, c to continue without paging--
+rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
+#4  0x000055cc5e8ec9a3 in std::__invoke<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(struct {...} &&) (__fn=...) at /usr/include/c++/14/bits/invoke.h:96
+#5  0x000055cc5e8ec8cc in std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > >::_M_invoke<0>(std::_Index_tuple<0>) (this=0x55cf13148548) at /usr/include/c++/14/bits/std_thread.h:301
+--Type <RET> for more, q to quit, c to continue without paging--
+#6  0x000055cc5e8ec84c in std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > >::operator()(void) (this=0x55cf13148548) at /usr/include/c++/14/bits/std_thread.h:308
+#7  0x000055cc5e8ec7d0 in std::thread::_State_impl<std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > > >::_M_run(void) (this=0x55cf13148540) at /usr/include/c++/14/bits/std_thread.h:253
+#8  0x00007f5f80550224 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+--Type <RET> for more, q to quit, c to continue without paging--
+#9  0x00007f5f802dfb7b in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+#10 0x00007f5f8035d7b8 in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 7 (Thread 0x7f5f7d14f6c0 (LWP 95062) "sharedkv_2rw_be"):
+#0  std::atomic<bool>::load (this=0x97b89, __m=21968) at /usr/include/c++/14/atomic:116
+#1  0x000055cc5e8f27bd in TwoRW::two_rw_worker_run (s=0x55cf11--Type <RET> for more, q to quit, c to continue without paging--
+9656a0) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:345
+#2  0x000055cc5e8ea15d in operator() (__closure=0x55cf131486d8) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:744
+#3  0x000055cc5e8ecad9 in std::__invoke_impl<void, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
+#4  0x000055cc5e8ec9a3 in std::__invoke<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(struct {...} &&) (__fn=...)--Type <RET> for more, q to quit, c to continue without paging--
+ at /usr/include/c++/14/bits/invoke.h:96
+#5  0x000055cc5e8ec8cc in std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > >::_M_invoke<0>(std::_Index_tuple<0>) (this=0x55cf131486d8) at /usr/include/c++/14/bits/std_thread.h:301
+#6  0x000055cc5e8ec84c in std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > >::operator()(void) (this=0x55cf131486d8) at /usr/include/c++/14/bits/std_thread.h:308
+#7  0x000055cc5e8ec7d0 in std::thread::_State_impl<std::thread--Type <RET> for more, q to quit, c to continue without paging--
+::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > > >::_M_run(void) (this=0x55cf131486d0) at /usr/include/c++/14/bits/std_thread.h:253
+#8  0x00007f5f80550224 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007f5f802dfb7b in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+#10 0x00007f5f8035d7b8 in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+--Type <RET> for more, q to quit, c to continue without paging--
+Thread 6 (Thread 0x7f5f7c94e6c0 (LWP 95063) "sharedkv_2rw_be"):
+#0  0x000055cc5e8f2b6d in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x55cf119683f8, item=...) at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:124
+#1  0x000055cc5e8f2393 in TwoRW::two_rw_worker_run (s=0x55cf11965720) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:295
+#2  0x000055cc5e8ea15d in operator() (__closure=0x55cc891b41d8--Type <RET> for more, q to quit, c to continue without paging--
+) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:744
+#3  0x000055cc5e8ecad9 in std::__invoke_impl<void, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
+#4  0x000055cc5e8ec9a3 in std::__invoke<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(struct {...} &&) (__fn=...) at /usr/include/c++/14/bits/invoke.h:96
+#5  0x000055cc5e8ec8cc in std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > >::_M_in--Type <RET> for more, q to quit, c to continue without paging--
+voke<0>(std::_Index_tuple<0>) (this=0x55cc891b41d8) at /usr/include/c++/14/bits/std_thread.h:301
+#6  0x000055cc5e8ec84c in std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > >::operator()(void) (this=0x55cc891b41d8) at /usr/include/c++/14/bits/std_thread.h:308
+#7  0x000055cc5e8ec7d0 in std::thread::_State_impl<std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > > >::_M_run(void) (this=0x55cc891b41d0) at /usr/include/c++/14/bits/std_thread.h:253
+--Type <RET> for more, q to quit, c to continue without paging--
+#8  0x00007f5f80550224 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007f5f802dfb7b in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+#10 0x00007f5f8035d7b8 in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 5 (Thread 0x7f5f7c14d6c0 (LWP 95064) "sharedkv_2rw_be"):
+#0  0x000055cc5e8f2b6d in TwoRW::LocalSpscConsumer<TwoRW::KVRe--Type <RET> for more, q to quit, c to continue without paging--
+quest, 4096ul>::dequeue (this=0x55cf11968410, item=...) at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:124
+#1  0x000055cc5e8f2393 in TwoRW::two_rw_worker_run (s=0x55cf119657a0) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:295
+#2  0x000055cc5e8ea15d in operator() (__closure=0x55cc891b4368) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:744
+#3  0x000055cc5e8ecad9 in std::__invoke_impl<void, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_ot--Type <RET> for more, q to quit, c to continue without paging--
+her, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
+#4  0x000055cc5e8ec9a3 in std::__invoke<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(struct {...} &&) (__fn=...) at /usr/include/c++/14/bits/invoke.h:96
+#5  0x000055cc5e8ec8cc in std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > >::_M_invoke<0>(std::_Index_tuple<0>) (this=0x55cc891b4368) at /usr/include/c++/14/bits/std_thread.h:301
+#6  0x000055cc5e8ec84c in std::thread::_Invoker<std::tuple<Two--Type <RET> for more, q to quit, c to continue without paging--
+RW::two_rw_start_threads(TwoRWContext*)::<lambda()> > >::operator()(void) (this=0x55cc891b4368) at /usr/include/c++/14/bits/std_thread.h:308
+#7  0x000055cc5e8ec7d0 in std::thread::_State_impl<std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > > >::_M_run(void) (this=0x55cc891b4360) at /usr/include/c++/14/bits/std_thread.h:253
+#8  0x00007f5f80550224 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007f5f802dfb7b in start_thread (arg=<optimized out>) a--Type <RET> for more, q to quit, c to continue without paging--
+t ./nptl/pthread_create.c:448
+#10 0x00007f5f8035d7b8 in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 4 (Thread 0x7f5f7b94c6c0 (LWP 95065) "sharedkv_2rw_be"):
+#0  0x000055cc5e8f236f in TwoRW::two_rw_worker_run (s=0x55cf11965820) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:294
+#1  0x000055cc5e8ea15d in operator() (__closure=0x55cf1198eac8--Type <RET> for more, q to quit, c to continue without paging--
+) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:744
+#2  0x000055cc5e8ecad9 in std::__invoke_impl<void, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
+#3  0x000055cc5e8ec9a3 in std::__invoke<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(struct {...} &&) (__fn=...) at /usr/include/c++/14/bits/invoke.h:96
+#4  0x000055cc5e8ec8cc in std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > >::_M_in--Type <RET> for more, q to quit, c to continue without paging--
+voke<0>(std::_Index_tuple<0>) (this=0x55cf1198eac8) at /usr/include/c++/14/bits/std_thread.h:301
+#5  0x000055cc5e8ec84c in std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > >::operator()(void) (this=0x55cf1198eac8) at /usr/include/c++/14/bits/std_thread.h:308
+#6  0x000055cc5e8ec7d0 in std::thread::_State_impl<std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > > >::_M_run(void) (this=0x55cf1198eac0) at /usr/include/c++/14/bits/std_thread.h:253
+--Type <RET> for more, q to quit, c to continue without paging--
+#7  0x00007f5f80550224 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#8  0x00007f5f802dfb7b in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+#9  0x00007f5f8035d7b8 in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 3 (Thread 0x7f5f7b14b6c0 (LWP 95151) "sharedkv_2rw_be"):
+#0  CXLSpscConsumer<TwoRW::KVResponse, 4096ul>::dequeue_batch_--Type <RET> for more, q to quit, c to continue without paging--
+pipelined (this=0x55cf119bfc08, items=0x7f5f7b14ab40, max_count=8) at /root/YCSB-YW/sharedkv/native/benchmark/../include/cxl_spsc_queue.h:435
+#1  0x000055cc5e8d64b8 in TwoRW::response_thread_fn (arg=0x55cf11973c50) at /root/YCSB-YW/sharedkv/native/benchmark/2rw_benchmark.cc:251
+#2  0x00007f5f802dfb7b in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+#3  0x00007f5f8035d7b8 in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+--Type <RET> for more, q to quit, c to continue without paging--
+
+Thread 2 (Thread 0x7f5f7a94a6c0 (LWP 95152) "sharedkv_2rw_be"):
+#0  CXLSpscProducer<TwoRW::KVRequest, 4096ul>::enqueue (this=0x55cf11f56848, item=...) at /root/YCSB-YW/sharedkv/native/benchmark/../include/cxl_spsc_queue.h:201
+#1  0x000055cc5e8d987c in TwoRW::two_rw_submit (ctx=0x7f5f806e8000, client_id=0, block_id=5013381, worker_id=8, op_type=1 '\001') at /root/YCSB-YW/sharedkv/native/benchmark/../include/2rw_context.h:742
+--Type <RET> for more, q to quit, c to continue without paging--
+#2  0x000055cc5e8d5deb in TwoRW::request_thread_fn (arg=0x55cf1198ecd0) at /root/YCSB-YW/sharedkv/native/benchmark/2rw_benchmark.cc:132
+#3  0x00007f5f802dfb7b in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+#4  0x00007f5f8035d7b8 in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 1 (Thread 0x7f5f80158780 (LWP 94949) "sharedkv_2rw_be"):
+--Type <RET> for more, q to quit, c to continue without paging--
+#0  __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+#1  0x00007f5f802dc668 in __internal_syscall_cancel (a1=<optimized out>, a2=<optimized out>, a3=<optimized out>, a4=<optimized out>, a5=a5@entry=0, a6=a6@entry=4294967295, nr=202) at ./nptl/cancellation.c:49
+#2  0x00007f5f802dcc8c in __futex_abstimed_wait_common64 (private=128, futex_word=0x7f5f7a94a990, expected=<optimized out>, op=<optimized out>, abstime=0x0, cancel=true) at ./nptl/futex-internal.c:57
+--Type <RET> for more, q to quit, c to continue without paging--
+#3  __futex_abstimed_wait_common (futex_word=futex_word@entry=0x7f5f7a94a990, expected=<optimized out>, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=128, cancel=cancel@entry=true) at ./nptl/futex-internal.c:87
+#4  0x00007f5f802dcceb in __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0x7f5f7a94a990, expected=<optimized out>, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=128) at ./nptl/futex-internal.c:139
+#5  0x00007f5f802e1774 in __pthread_clockjoin_ex (threadid=140048055183040, thread_return=0x0, clockid=0, abstime=0x0, block--Type <RET> for more, q to quit, c to continue without paging--
+=<optimized out>) at ./nptl/pthread_join_common.c:108
+#6  0x000055cc5e8d746a in TwoRW::run_2rw_phase (ctx=0x7f5f806e8000, ops=std::vector of length 10000000, capacity 16777216 = {...}, num_clients=1, global_client_start=0, client_cpu_start=14, throughput_mode=false, duration_sec=10, ops_per_client=5000000, measure_latency=true) at /root/YCSB-YW/sharedkv/native/benchmark/2rw_benchmark.cc:469
+#7  0x000055cc5e8e241f in main (argc=47, argv=0x7ffdef9bf618) at /root/YCSB-YW/sharedkv/native/benchmark/2rw_benchmark_main.cc:516
+(gdb) 
+
+
+
+Slave info
+[SN1] ops=4800000  wall=7812.3  A(deq/op)=3483.7  C(enq/op)=622.7  F(flush/op)=1.0  fw=0  empty=4014700
+
+===== PIPELINE DIAGNOSTIC (SIGUSR1) =====
+RequestQueues [n=2 × s=2]:
+  ReqQ[c0,sn0]: fill=15 (w=2539085 r=2539070)
+  ReqQ[c0,sn1]: fill=13 (w=2534933 r=2534920)
+  ReqQ[c1,sn0]: fill=9 (w=2434004 r=2433995)
+  ReqQ[c1,sn1]: fill=4096 (w=2433884 r=2429788)
+WorkerRings [m=16]:
+  WR[0]: fill=0 (w=0 r=0)
+  WR[1]: fill=0 (w=0 r=0)
+  WR[2]: fill=0 (w=0 r=0)
+  WR[3]: fill=0 (w=0 r=0)
+  WR[4]: fill=0 (w=0 r=0)
+  WR[5]: fill=0 (w=0 r=0)
+  WR[6]: fill=0 (w=0 r=0)
+  WR[7]: fill=0 (w=0 r=0)
+  WR[8]: fill=4096 (w=621154 r=617058) FULL
+  WR[9]: fill=1037 (w=620720 r=619683)
+  WR[10]: fill=0 (w=620535 r=620535)
+  WR[11]: fill=3682 (w=621044 r=617362)
+  WR[12]: fill=0 (w=620050 r=620050)
+  WR[13]: fill=0 (w=620412 r=620412)
+  WR[14]: fill=0 (w=620745 r=620745)
+  WR[15]: fill=0 (w=620090 r=620090)
+ResponseQueues [n=2 × m=16]:
+  RespQ[c0,w5]: fill=317199 (w=317199 r=0) FULL
+  RespQ[c0,w11]: fill=867 (w=315083 r=314216)
+  RespQ[c0,w12]: fill=1996 (w=316301 r=314305)
+  RespQ[c0,w14]: fill=2893 (w=317014 r=314121)
+FreeBlockQueues [n=2]:
+  FBQ[c0]: fill=0 (w=0 r=0)
+  FBQ[c1]: fill=0 (w=10038 r=10038)
+LocalBlockCaches [n=2]:
+  Cache[c0]: top=1024
+  Cache[c1]: top=5
+Bitmap: free=16942177 / total=26812002
+===== END DIAGNOSTIC =====
+...
+root@debian-6:~/YCSB-YW/sharedkv/native/benchmar
+k# gdb -p $(pgrep sharedkv)
+GNU gdb (Debian 16.3-1) 16.3
+Copyright (C) 2024 Free Software Foundation, Inc.
+License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>
+This is free software: you are free to change and redistribute it.
+There is NO WARRANTY, to the extent permitted by law.
+--Type <RET> for more, q to quit, c to continue without paging--
+Type "show copying" and "show warranty" for details.
+This GDB was configured as "x86_64-linux-gnu".
+Type "show configuration" for configuration details.
+For bug reporting instructions, please see:
+<https://www.gnu.org/software/gdb/bugs/>.
+Find the GDB manual and other documentation resources online at:
+--Type <RET> for more, q to quit, c to continue without paging--
+    <http://www.gnu.org/software/gdb/documentation/>.
+
+For help, type "help".
+Type "apropos word" to search for commands related to "word".
+Attaching to process 91098
+[New LWP 91165]
+[New LWP 91164]
+--Type <RET> for more, q to quit, c to continue without paging--
+[New LWP 91163]
+[New LWP 91162]
+[New LWP 91161]
+[New LWP 91160]
+[New LWP 91159]
+[New LWP 91158]
+[New LWP 91157]
+[New LWP 91156]
+[New LWP 91155]
+--Type <RET> for more, q to quit, c to continue without paging--
+[New LWP 91154]
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib/x86_64-linux-gnu/libthread_db.so.1".
+__syscall_cancel_arch ()
+    at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+
+warning: 56     ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S: No such file or directory
+(gdb) threads info
+Undefined command: "threads".  Try "help".
+(gdb) info threads
+  Id   Target Id                                           Frame 
+* 1    Thread 0x7fd1eba57780 (LWP 91098) "sharedkv_2rw_be" __syscall_cancel_arch ()
+    at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+  2    Thread 0x7fd1e62496c0 (LWP 91165) "sharedkv_2rw_be" CXLSpscProducer<TwoRW::KVRequest, 4096ul>::enqueue (this=0x559ee0714878, item=...)
+--Type <RET> for more, q to quit, c to continue without paging--
+    at /root/YCSB-YW/sharedkv/native/benchmark/../include/cxl_spsc_queue.h:201
+  3    Thread 0x7fd1e6a4a6c0 (LWP 91164) "sharedkv_2rw_be" CXLSpscConsumer<TwoRW::KVResponse, 4096ul>::dequeue_batch_pipelined (
+    this=0x559ee017de00, items=0x7fd1e6a49b40, 
+    max_count=8)
+    at /root/YCSB-YW/sharedkv/native/benchmark/../include/cxl_spsc_queue.h:435
+--Type <RET> for more, q to quit, c to continue without paging--
+  4    Thread 0x7fd1e724b6c0 (LWP 91163) "sharedkv_2rw_be" _mm_pause ()
+    at /usr/lib/gcc/x86_64-linux-gnu/14/include/xmmintrin.h:1338
+  5    Thread 0x7fd1e7a4c6c0 (LWP 91162) "sharedkv_2rw_be" 0x0000559c4d9f7b6d in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (
+    this=0x559ee01264d0, item=...)
+    at /root/YCSB-YW/sharedkv/native/benchmark/.--Type <RET> for more, q to quit, c to continue without paging--
+./include/local_spsc_queue.h:124
+  6    Thread 0x7fd1e824d6c0 (LWP 91161) "sharedkv_2rw_be" 0x0000559c4d9f7b6d in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (
+    this=0x559ee01264b8, item=...)
+    at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:124
+  7    Thread 0x7fd1e8a4e6c0 (LWP 91160) "sharedkv_2rw_be" _mm_pause ()
+--Type <RET> for more, q to quit, c to continue without paging--
+    at /usr/lib/gcc/x86_64-linux-gnu/14/include/xmmintrin.h:1338
+  8    Thread 0x7fd1e924f6c0 (LWP 91159) "sharedkv_2rw_be" TwoRW::ub (base=0x7fc118a35000, 
+    id=5002030)
+    at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:55
+  9    Thread 0x7fd1e9a506c0 (LWP 91158) "sharedkv_2rw_be" 0x0000559c4d9f7b6d in TwoRW::LocalSps--Type <RET> for more, q to quit, c to continue without paging--
+cConsumer<TwoRW::KVRequest, 4096ul>::dequeue (
+    this=0x559ee0126470, item=...)
+    at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:124
+  10   Thread 0x7fd1ea2516c0 (LWP 91157) "sharedkv_2rw_be" __memcmp_evex_movbe ()
+    at ../sysdeps/x86_64/multiarch/memcmp-evex-movbe.S:133
+  11   Thread 0x7fd1eaa526c0 (LWP 91156) "shared--Type <RET> for more, q to quit, c to continue without paging--
+kv_2rw_be" __memcmp_evex_movbe ()
+    at ../sysdeps/x86_64/multiarch/memcmp-evex-movbe.S:133
+  12   Thread 0x7fd1eb2536c0 (LWP 91155) "sharedkv_2rw_be" 0x0000559c4d9ddf76 in std::__atomic_base<bool>::load (this=0x7fd1ebfe7200, 
+    __m=std::memory_order_relaxed)
+    at /usr/include/c++/14/bits/atomic_base.h:497
+--Type <RET> for more, q to quit, c to continue without paging--
+  13   Thread 0x7fd1eba546c0 (LWP 91154) "sharedkv_2rw_be" 0x00007fd1ebc448c7 in __GI_sched_yield () at ../sysdeps/unix/syscall-template.S:120
+(gdb) thread apply all bt
+
+Thread 13 (Thread 0x7fd1eba546c0 (LWP 91154) "sharedkv_2rw_be"):
+#0  0x00007fd1ebc448c7 in __GI_sched_yield () at ../sysdeps/unix/syscall-template.S:120
+#1  0x0000559c4d9e9dd1 in __gthread_yield () at /usr/include/x86_64-linux-gnu/c++/14/bits/gthr-default.h:706
+#2  0x0000559c4d9e9ddc in std::this_thread::yiel--Type <RET> for more, q to quit, c to continue without paging--
+d () at /usr/include/c++/14/bits/std_thread.h:375
+#3  0x0000559c4d9f82c0 in TwoRW::two_rw_poller_run (s=0x55a0244a50b0) at /root/YCSB-YW/sharedkv/native/src/2rw_poller.cpp:89
+#4  0x0000559c4d9ef054 in operator() (__closure=0x559c579c4018) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:713
+#5  0x0000559c4d9f1b90 in std::__invoke_impl<voi--Type <RET> for more, q to quit, c to continue without paging--
+d, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
+#6  0x0000559c4d9f1a9c in std::__invoke<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(struct {...} &&) (__fn=...) at /usr/include/c++/14/bits/invoke.h:96
+#7  0x0000559c4d9f1950 in std::thread::_Invoker<--Type <RET> for more, q to quit, c to continue without paging--
+std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > >::_M_invoke<0>(std::_Index_tuple<0>) (this=0x559c579c4018) at /usr/include/c++/14/bits/std_thread.h:301
+#8  0x0000559c4d9f18a0 in std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > >::operator()(void) (this=0x559c579c4018) at /usr/include/c++/14/bits/std_thread.h:308
+--Type <RET> for more, q to quit, c to continue without paging--
+#9  0x0000559c4d9f1830 in std::thread::_State_impl<std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > > >::_M_run(void) (this=0x559c579c4010) at /usr/include/c++/14/bits/std_thread.h:253
+#10 0x00007fd1ebe4f224 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#11 0x00007fd1ebbdeb7b in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+--Type <RET> for more, q to quit, c to continue without paging--
+#12 0x00007fd1ebc5c7b8 in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 12 (Thread 0x7fd1eb2536c0 (LWP 91155) "sharedkv_2rw_be"):
+#0  0x0000559c4d9ddf76 in std::__atomic_base<bool>::load (this=0x7fd1ebfe7200, __m=std::memory_order_relaxed) at /usr/include/c++/14/bits/atomic_base.h:497
+--Type <RET> for more, q to quit, c to continue without paging--
+#1  std::atomic<bool>::load (this=0x7fd1ebfe7200, __m=std::memory_order_relaxed) at /usr/include/c++/14/atomic:117
+#2  0x0000559c4d9f575c in TwoRW::two_rw_synchronizer_run (s=0x7fd1eba55000) at /root/YCSB-YW/sharedkv/native/src/2rw_synchronizer.cpp:155
+#3  0x0000559c4d9ef0fa in operator() (__closure=0x559ee6024b78) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:733
+--Type <RET> for more, q to quit, c to continue without paging--
+#4  0x0000559c4d9f1b16 in std::__invoke_impl<void, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
+#5  0x0000559c4d9f19f6 in std::__invoke<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(struct {...} &&) (__fn=...) at /usr/include/c++/14/bits/invoke.h:96
+--Type <RET> for more, q to quit, c to continue without paging--
+#6  0x0000559c4d9f18f8 in std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > >::_M_invoke<0>(std::_Index_tuple<0>) (this=0x559ee6024b78) at /usr/include/c++/14/bits/std_thread.h:301
+#7  0x0000559c4d9f1868 in std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > >::operator()(void) (this=0x559ee6024b78) at /usr/include/c++/14/bits/std_th--Type <RET> for more, q to quit, c to continue without paging--
+read.h:308
+#8  0x0000559c4d9f17f0 in std::thread::_State_impl<std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > > >::_M_run(void) (this=0x559ee6024b70) at /usr/include/c++/14/bits/std_thread.h:253
+#9  0x00007fd1ebe4f224 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#10 0x00007fd1ebbdeb7b in start_thread (arg=<opt--Type <RET> for more, q to quit, c to continue without paging--
+imized out>) at ./nptl/pthread_create.c:448
+#11 0x00007fd1ebc5c7b8 in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 11 (Thread 0x7fd1eaa526c0 (LWP 91156) "sharedkv_2rw_be"):
+#0  __memcmp_evex_movbe () at ../sysdeps/x86_64/multiarch/memcmp-evex-movbe.S:133
+#1  0x0000559c4d9f6bfd in TwoRW::kv_put (req=...--Type <RET> for more, q to quit, c to continue without paging--
+, base=0x7fc118a35000, buckets=0x7fc113a00040, num_buckets=8388608, stats=0x0) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:110
+#2  0x0000559c4d9f7472 in TwoRW::two_rw_worker_run (s=0x559ee01238a0) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:311
+#3  0x0000559c4d9ef15d in operator() (__closure=0x55a0244b52d8) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:744
+--Type <RET> for more, q to quit, c to continue without paging--
+#4  0x0000559c4d9f1ad9 in std::__invoke_impl<void, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
+#5  0x0000559c4d9f19a3 in std::__invoke<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(struct {...} &&) (__fn=...) at /usr/include/c++/14/bits/invoke.h:96
+--Type <RET> for more, q to quit, c to continue without paging--
+#6  0x0000559c4d9f18cc in std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > >::_M_invoke<0>(std::_Index_tuple<0>) (this=0x55a0244b52d8) at /usr/include/c++/14/bits/std_thread.h:301
+#7  0x0000559c4d9f184c in std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > >::operator()(void) (this=0x55a0244b52d8) at /usr/include/c++/14/bits/std_th--Type <RET> for more, q to quit, c to continue without paging--
+read.h:308
+#8  0x0000559c4d9f17d0 in std::thread::_State_impl<std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > > >::_M_run(void) (this=0x55a0244b52d0) at /usr/include/c++/14/bits/std_thread.h:253
+#9  0x00007fd1ebe4f224 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#10 0x00007fd1ebbdeb7b in start_thread (arg=<opt--Type <RET> for more, q to quit, c to continue without paging--
+imized out>) at ./nptl/pthread_create.c:448
+#11 0x00007fd1ebc5c7b8 in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 10 (Thread 0x7fd1ea2516c0 (LWP 91157) "sharedkv_2rw_be"):
+#0  __memcmp_evex_movbe () at ../sysdeps/x86_64/multiarch/memcmp-evex-movbe.S:133
+#1  0x0000559c4d9f6bfd in TwoRW::kv_put (req=...--Type <RET> for more, q to quit, c to continue without paging--
+, base=0x7fc118a35000, buckets=0x7fc113a00040, num_buckets=8388608, stats=0x0) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:110
+#2  0x0000559c4d9f7472 in TwoRW::two_rw_worker_run (s=0x559ee0123920) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:311
+#3  0x0000559c4d9ef15d in operator() (__closure=0x559c57922a38) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:744
+--Type <RET> for more, q to quit, c to continue without paging--
+#4  0x0000559c4d9f1ad9 in std::__invoke_impl<void, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
+#5  0x0000559c4d9f19a3 in std::__invoke<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(struct {...} &&) (__fn=...) at /usr/include/c++/14/bits/invoke.h:96
+--Type <RET> for more, q to quit, c to continue without paging--
+#6  0x0000559c4d9f18cc in std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > >::_M_invoke<0>(std::_Index_tuple<0>) (this=0x559c57922a38) at /usr/include/c++/14/bits/std_thread.h:301
+#7  0x0000559c4d9f184c in std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > >::operator()(void) (this=0x559c57922a38) at /usr/include/c++/14/bits/std_th--Type <RET> for more, q to quit, c to continue without paging--
+read.h:308
+#8  0x0000559c4d9f17d0 in std::thread::_State_impl<std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > > >::_M_run(void) (this=0x559c57922a30) at /usr/include/c++/14/bits/std_thread.h:253
+#9  0x00007fd1ebe4f224 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#10 0x00007fd1ebbdeb7b in start_thread (arg=<opt--Type <RET> for more, q to quit, c to continue without paging--
+imized out>) at ./nptl/pthread_create.c:448
+#11 0x00007fd1ebc5c7b8 in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 9 (Thread 0x7fd1e9a506c0 (LWP 91158) "sharedkv_2rw_be"):
+#0  0x0000559c4d9f7b6d in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x559ee0126470, item=...) at /root/YCSB-YW/sharedkv/--Type <RET> for more, q to quit, c to continue without paging--
+native/benchmark/../include/local_spsc_queue.h:124
+#1  0x0000559c4d9f7393 in TwoRW::two_rw_worker_run (s=0x559ee01239a0) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:295
+#2  0x0000559c4d9ef15d in operator() (__closure=0x559c5791d198) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:744
+#3  0x0000559c4d9f1ad9 in std::__invoke_impl<voi--Type <RET> for more, q to quit, c to continue without paging--
+d, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
+#4  0x0000559c4d9f19a3 in std::__invoke<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(struct {...} &&) (__fn=...) at /usr/include/c++/14/bits/invoke.h:96
+#5  0x0000559c4d9f18cc in std::thread::_Invoker<--Type <RET> for more, q to quit, c to continue without paging--
+std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > >::_M_invoke<0>(std::_Index_tuple<0>) (this=0x559c5791d198) at /usr/include/c++/14/bits/std_thread.h:301
+#6  0x0000559c4d9f184c in std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > >::operator()(void) (this=0x559c5791d198) at /usr/include/c++/14/bits/std_thread.h:308
+--Type <RET> for more, q to quit, c to continue without paging--
+#7  0x0000559c4d9f17d0 in std::thread::_State_impl<std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > > >::_M_run(void) (this=0x559c5791d190) at /usr/include/c++/14/bits/std_thread.h:253
+#8  0x00007fd1ebe4f224 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007fd1ebbdeb7b in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+--Type <RET> for more, q to quit, c to continue without paging--
+#10 0x00007fd1ebc5c7b8 in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 8 (Thread 0x7fd1e924f6c0 (LWP 91159) "sharedkv_2rw_be"):
+#0  TwoRW::ub (base=0x7fc118a35000, id=5002030) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:55
+#1  0x0000559c4d9f6e49 in TwoRW::kv_get (req=...--Type <RET> for more, q to quit, c to continue without paging--
+, base=0x7fc118a35000, buckets=0x7fc113a00040, num_buckets=8388608, stats=0x0) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:178
+#2  0x0000559c4d9f7519 in TwoRW::two_rw_worker_run (s=0x559ee0123a20) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:314
+#3  0x0000559c4d9ef15d in operator() (__closure=0x559ee1906548) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:744
+--Type <RET> for more, q to quit, c to continue without paging--
+#4  0x0000559c4d9f1ad9 in std::__invoke_impl<void, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
+#5  0x0000559c4d9f19a3 in std::__invoke<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(struct {...} &&) (__fn=...) at /usr/include/c++/14/bits/invoke.h:96
+--Type <RET> for more, q to quit, c to continue without paging--
+#6  0x0000559c4d9f18cc in std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > >::_M_invoke<0>(std::_Index_tuple<0>) (this=0x559ee1906548) at /usr/include/c++/14/bits/std_thread.h:301
+#7  0x0000559c4d9f184c in std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > >::operator()(void) (this=0x559ee1906548) at /usr/include/c++/14/bits/std_th--Type <RET> for more, q to quit, c to continue without paging--
+read.h:308
+#8  0x0000559c4d9f17d0 in std::thread::_State_impl<std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > > >::_M_run(void) (this=0x559ee1906540) at /usr/include/c++/14/bits/std_thread.h:253
+#9  0x00007fd1ebe4f224 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#10 0x00007fd1ebbdeb7b in start_thread (arg=<opt--Type <RET> for more, q to quit, c to continue without paging--
+imized out>) at ./nptl/pthread_create.c:448
+#11 0x00007fd1ebc5c7b8 in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 7 (Thread 0x7fd1e8a4e6c0 (LWP 91160) "sharedkv_2rw_be"):
+#0  _mm_pause () at /usr/lib/gcc/x86_64-linux-gnu/14/include/xmmintrin.h:1338
+#1  TwoRW::two_rw_worker_run (s=0x559ee0123aa0) --Type <RET> for more, q to quit, c to continue without paging--
+at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:361
+#2  0x0000559c4d9ef15d in operator() (__closure=0x559ee19066d8) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:744
+#3  0x0000559c4d9f1ad9 in std::__invoke_impl<void, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h--Type <RET> for more, q to quit, c to continue without paging--
+:61
+#4  0x0000559c4d9f19a3 in std::__invoke<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(struct {...} &&) (__fn=...) at /usr/include/c++/14/bits/invoke.h:96
+#5  0x0000559c4d9f18cc in std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > >::_M_invoke<0>(std::_Index_tuple<0>) (this=0x559ee19066d8) at /usr/include/--Type <RET> for more, q to quit, c to continue without paging--
+c++/14/bits/std_thread.h:301
+#6  0x0000559c4d9f184c in std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > >::operator()(void) (this=0x559ee19066d8) at /usr/include/c++/14/bits/std_thread.h:308
+#7  0x0000559c4d9f17d0 in std::thread::_State_impl<std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > > >--Type <RET> for more, q to quit, c to continue without paging--
+::_M_run(void) (this=0x559ee19066d0) at /usr/include/c++/14/bits/std_thread.h:253
+#8  0x00007fd1ebe4f224 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007fd1ebbdeb7b in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+#10 0x00007fd1ebc5c7b8 in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+--Type <RET> for more, q to quit, c to continue without paging--
+Thread 6 (Thread 0x7fd1e824d6c0 (LWP 91161) "sharedkv_2rw_be"):
+#0  0x0000559c4d9f7b6d in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x559ee01264b8, item=...) at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:124
+#1  0x0000559c4d9f7393 in TwoRW::two_rw_worker_run (s=0x559ee0123b20) at /root/YCSB-YW/sharedkv/--Type <RET> for more, q to quit, c to continue without paging--
+native/src/2rw_worker.cpp:295
+#2  0x0000559c4d9ef15d in operator() (__closure=0x559c579721d8) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:744
+#3  0x0000559c4d9f1ad9 in std::__invoke_impl<void, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
+--Type <RET> for more, q to quit, c to continue without paging--
+#4  0x0000559c4d9f19a3 in std::__invoke<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(struct {...} &&) (__fn=...) at /usr/include/c++/14/bits/invoke.h:96
+#5  0x0000559c4d9f18cc in std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > >::_M_invoke<0>(std::_Index_tuple<0>) (this=0x559c579721d8) at /usr/include/c++/14/bits/std_thread.h:301
+--Type <RET> for more, q to quit, c to continue without paging--
+#6  0x0000559c4d9f184c in std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > >::operator()(void) (this=0x559c579721d8) at /usr/include/c++/14/bits/std_thread.h:308
+#7  0x0000559c4d9f17d0 in std::thread::_State_impl<std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > > >::_M_run(void) (this=0x559c579721d0) at /usr/inc--Type <RET> for more, q to quit, c to continue without paging--
+lude/c++/14/bits/std_thread.h:253
+#8  0x00007fd1ebe4f224 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007fd1ebbdeb7b in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+#10 0x00007fd1ebc5c7b8 in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 5 (Thread 0x7fd1e7a4c6c0 (LWP 91162) "sha--Type <RET> for more, q to quit, c to continue without paging--
+redkv_2rw_be"):
+#0  0x0000559c4d9f7b6d in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x559ee01264d0, item=...) at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:124
+#1  0x0000559c4d9f7393 in TwoRW::two_rw_worker_run (s=0x559ee0123ba0) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:295
+--Type <RET> for more, q to quit, c to continue without paging--
+#2  0x0000559c4d9ef15d in operator() (__closure=0x559c57972368) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:744
+#3  0x0000559c4d9f1ad9 in std::__invoke_impl<void, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
+#4  0x0000559c4d9f19a3 in std::__invoke<TwoRW::t--Type <RET> for more, q to quit, c to continue without paging--
+wo_rw_start_threads(TwoRWContext*)::<lambda()> >(struct {...} &&) (__fn=...) at /usr/include/c++/14/bits/invoke.h:96
+#5  0x0000559c4d9f18cc in std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > >::_M_invoke<0>(std::_Index_tuple<0>) (this=0x559c57972368) at /usr/include/c++/14/bits/std_thread.h:301
+#6  0x0000559c4d9f184c in std::thread::_Invoker<--Type <RET> for more, q to quit, c to continue without paging--
+std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > >::operator()(void) (this=0x559c57972368) at /usr/include/c++/14/bits/std_thread.h:308
+#7  0x0000559c4d9f17d0 in std::thread::_State_impl<std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > > >::_M_run(void) (this=0x559c57972360) at /usr/include/c++/14/bits/std_thread.h:253
+--Type <RET> for more, q to quit, c to continue without paging--
+#8  0x00007fd1ebe4f224 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007fd1ebbdeb7b in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+#10 0x00007fd1ebc5c7b8 in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 4 (Thread 0x7fd1e724b6c0 (LWP 91163) "sharedkv_2rw_be"):
+--Type <RET> for more, q to quit, c to continue without paging--
+#0  _mm_pause () at /usr/lib/gcc/x86_64-linux-gnu/14/include/xmmintrin.h:1338
+#1  TwoRW::two_rw_worker_run (s=0x559ee0123c20) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:361
+#2  0x0000559c4d9ef15d in operator() (__closure=0x559ee014cac8) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:744
+#3  0x0000559c4d9f1ad9 in std::__invoke_impl<voi--Type <RET> for more, q to quit, c to continue without paging--
+d, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
+#4  0x0000559c4d9f19a3 in std::__invoke<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(struct {...} &&) (__fn=...) at /usr/include/c++/14/bits/invoke.h:96
+#5  0x0000559c4d9f18cc in std::thread::_Invoker<--Type <RET> for more, q to quit, c to continue without paging--
+std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > >::_M_invoke<0>(std::_Index_tuple<0>) (this=0x559ee014cac8) at /usr/include/c++/14/bits/std_thread.h:301
+#6  0x0000559c4d9f184c in std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > >::operator()(void) (this=0x559ee014cac8) at /usr/include/c++/14/bits/std_thread.h:308
+--Type <RET> for more, q to quit, c to continue without paging--
+#7  0x0000559c4d9f17d0 in std::thread::_State_impl<std::thread::_Invoker<std::tuple<TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> > > >::_M_run(void) (this=0x559ee014cac0) at /usr/include/c++/14/bits/std_thread.h:253
+#8  0x00007fd1ebe4f224 in ?? () from /lib/x86_64-linux-gnu/libstdc++.so.6
+#9  0x00007fd1ebbdeb7b in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+--Type <RET> for more, q to quit, c to continue without paging--
+#10 0x00007fd1ebc5c7b8 in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+Thread 3 (Thread 0x7fd1e6a4a6c0 (LWP 91164) "sharedkv_2rw_be"):
+#0  CXLSpscConsumer<TwoRW::KVResponse, 4096ul>::dequeue_batch_pipelined (this=0x559ee017de00, items=0x7fd1e6a49b40, max_count=8) at /root/YCSB-YW/sharedkv/native/benchmark/../include/cxl_spsc_--Type <RET> for more, q to quit, c to continue without paging--
+queue.h:435
+#1  0x0000559c4d9db4b8 in TwoRW::response_thread_fn (arg=0x559ee0131c50) at /root/YCSB-YW/sharedkv/native/benchmark/2rw_benchmark.cc:251
+#2  0x00007fd1ebbdeb7b in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+#3  0x00007fd1ebc5c7b8 in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+
+--Type <RET> for more, q to quit, c to continue without paging--
+Thread 2 (Thread 0x7fd1e62496c0 (LWP 91165) "sharedkv_2rw_be"):
+#0  CXLSpscProducer<TwoRW::KVRequest, 4096ul>::enqueue (this=0x559ee0714878, item=...) at /root/YCSB-YW/sharedkv/native/benchmark/../include/cxl_spsc_queue.h:201
+#1  0x0000559c4d9de87c in TwoRW::two_rw_submit (ctx=0x7fd1ebfe7000, client_id=1, block_id=18340933, worker_id=8, op_type=2 '\002') at /root/YCSB--Type <RET> for more, q to quit, c to continue without paging--
+-YW/sharedkv/native/benchmark/../include/2rw_context.h:742
+#2  0x0000559c4d9dadeb in TwoRW::request_thread_fn (arg=0x559ee014ccd0) at /root/YCSB-YW/sharedkv/native/benchmark/2rw_benchmark.cc:132
+#3  0x00007fd1ebbdeb7b in start_thread (arg=<optimized out>) at ./nptl/pthread_create.c:448
+#4  0x00007fd1ebc5c7b8 in __GI___clone3 () at ../sysdeps/unix/sysv/linux/x86_64/clone3.S:78
+--Type <RET> for more, q to quit, c to continue without paging--
+
+Thread 1 (Thread 0x7fd1eba57780 (LWP 91098) "sharedkv_2rw_be"):
+#0  __syscall_cancel_arch () at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+#1  0x00007fd1ebbdb668 in __internal_syscall_cancel (a1=<optimized out>, a2=<optimized out>, a3=<optimized out>, a4=<optimized out>, a5=a5@entry=0, a6=a6@entry=4294967295, nr=202) at ./nptl/ca--Type <RET> for more, q to quit, c to continue without paging--
+ncellation.c:49
+#2  0x00007fd1ebbdbc8c in __futex_abstimed_wait_common64 (private=128, futex_word=0x7fd1e6249990, expected=<optimized out>, op=<optimized out>, abstime=0x0, cancel=true) at ./nptl/futex-internal.c:57
+#3  __futex_abstimed_wait_common (futex_word=futex_word@entry=0x7fd1e6249990, expected=<optimized out>, clockid=clockid@entry=0, abstime=abstime--Type <RET> for more, q to quit, c to continue without paging--
+@entry=0x0, private=private@entry=128, cancel=cancel@entry=true) at ./nptl/futex-internal.c:87
+#4  0x00007fd1ebbdbceb in __GI___futex_abstimed_wait_cancelable64 (futex_word=futex_word@entry=0x7fd1e6249990, expected=<optimized out>, clockid=clockid@entry=0, abstime=abstime@entry=0x0, private=private@entry=128) at ./nptl/futex-internal.c:139
+#5  0x00007fd1ebbe0774 in __pthread_clockjoin_ex--Type <RET> for more, q to quit, c to continue without paging--
+ (threadid=140539486049984, thread_return=0x0, clockid=0, abstime=0x0, block=<optimized out>) at ./nptl/pthread_join_common.c:108
+#6  0x0000559c4d9dc46a in TwoRW::run_2rw_phase (ctx=0x7fd1ebfe7000, ops=std::vector of length 10000000, capacity 16777216 = {...}, num_clients=1, global_client_start=1, client_cpu_start=14, throughput_mode=false, duration_sec=0, ops_per_client=5000000, measure_latency=false) at /root/YCS--Type <RET> for more, q to quit, c to continue without paging--
+B-YW/sharedkv/native/benchmark/2rw_benchmark.cc:469
+#7  0x0000559c4d9e735c in main (argc=47, argv=0x7ffd585e44a8) at /root/YCSB-YW/sharedkv/native/benchmark/2rw_benchmark_main.cc:493
+(gdb) 

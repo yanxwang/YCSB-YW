@@ -26,13 +26,11 @@ fi
 # ============================================================================
 WORKLOAD="workloada"
 WORKLOAD_DIR="/mnt/ywang/workloads"
-MEM_GB=64
-NUM_BUCKETS=8388608                # 8M buckets
 NUM_CLIENTS=2                      # total across cluster
 NUM_WORKERS=16                     # total across cluster
 NUM_SYNCHRONIZERS=2                # total across cluster
-QUEUE_DEPTH=1024
-SLOTS=1024
+DEQUEUE_BATCH=64
+READ_ACK_BATCH=64
 
 # CXL DAX device (devdax mode required for multi-machine)
 CXL_DEVICE="/dev/dax0.0"
@@ -108,16 +106,14 @@ CMD="$BIN \
   --workload $WORKLOAD \
   --workload-dir $WORKLOAD_DIR \
   --numa $CXL_NUMA \
-  --mem-gb $MEM_GB \
   --num-nodes 2 \
   --node-id $NODE_ID \
   --cxl-device $CXL_DEVICE \
   --num-clients $NUM_CLIENTS \
   --num-workers $NUM_WORKERS \
   --num-synchronizers $NUM_SYNCHRONIZERS \
-  --num-buckets $NUM_BUCKETS \
-  --queue-depth $QUEUE_DEPTH \
-  --slots $SLOTS \
+  --dequeue-batch $DEQUEUE_BATCH \
+  --read-ack-batch $READ_ACK_BATCH \
   --global-sn-start $GLOBAL_SN_START \
   --global-sn-count $GLOBAL_SN_COUNT \
   --global-worker-start $GLOBAL_WORKER_START \

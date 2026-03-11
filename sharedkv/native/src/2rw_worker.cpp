@@ -64,13 +64,40 @@ static inline UnifiedBlock* ub(void* base, uint32_t id) {
 // Worker swaps id_new in, returns id_old via block_id_a (0 = new key).
 // ============================================================================
 
-static thread_local uint64_t put_call_count = 0;
+// ============================================================================
+// Diagnostic counters — mismatch detection (only active with --worker-check)
+// Collected per-thread, written to WorkerThreadState at exit.
+// ============================================================================
+
+static thread_local uint64_t tl_route_mismatches = 0;  // req.worker_id != wid
+static thread_local uint64_t tl_block_mismatches = 0;  // computed hash%m != wid
+
+// ============================================================================
+// check_block_data — recompute FNV-1a on the key read from a block and verify
+// it routes to this worker.  Prints immediately on every mismatch (real-time).
+// ============================================================================
+
+static inline void check_block_data(uint32_t wid, uint32_t num_workers,
+                                    uint32_t block_id, uint32_t key_hash,
+                                    uint16_t key_len, const char* key,
+                                    uint8_t op_type) {
+    const uint32_t computed_wid = two_rw_route(key, key_len, num_workers);
+    if (__builtin_expect(computed_wid != wid, 0)) {
+        tl_block_mismatches++;
+        fprintf(stderr,
+                "[W%u] BLOCK_MISMATCH #%lu: block_id=%u op=%u "
+                "key_hash=0x%08x key_len=%u "
+                "computed_wid=%u (expected %u)\n",
+                wid, tl_block_mismatches, block_id, op_type,
+                key_hash, key_len, computed_wid, wid);
+    }
+}
 
 static KVResponse kv_put(const KVRequest& req, void* base,
                            CXLBucket* buckets, uint32_t num_buckets,
-                           WorkerOpStats* stats) {
+                           uint32_t wid, uint32_t num_workers,
+                           WorkerOpStats* stats, bool do_check) {
     KVResponse resp{};
-    put_call_count++;
 
     const uint32_t id_new    = req.block_id;
     UnifiedBlock*  block_new = ub(base, id_new);
@@ -83,13 +110,14 @@ static KVResponse kv_put(const KVRequest& req, void* base,
     cxl_clflushopt(static_cast<char*>(static_cast<void*>(block_new)) + 128);  // line 2
     _mm_lfence();  // wait for all clflushopt + prior loads to complete
 
-    // Diagnostic: volatile reads with checkpoint markers
-    volatile uint32_t dbg_step = 1;  // step 1: read block header
     const uint32_t key_hash = block_new->key_hash;
     const uint16_t key_len  = block_new->key_len;
     const char*    key      = block_new->data;
 
-    dbg_step = 2;  // step 2: read bucket head
+    // Check 2: block data integrity — recompute worker route from key bytes
+    if (do_check)
+        check_block_data(wid, num_workers, id_new, key_hash, key_len, key, req.op_type);
+
     const uint32_t bkt_id = key_hash % num_buckets;
     CXLBucket*     bucket = &buckets[bkt_id];
 
@@ -98,21 +126,17 @@ static KVResponse kv_put(const KVRequest& req, void* base,
     uint32_t id_old  = 0;
     uint32_t depth   = 0;
 
-    dbg_step = 3;  // step 3: chain traversal
     while (cur_id != 0) {
         UnifiedBlock* cur = ub(base, cur_id);
         depth++;
-        dbg_step = 4;  // step 4: reading chain node fields
         uint32_t cur_hash = cur->key_hash;
         uint16_t cur_klen = cur->key_len;
-        dbg_step = 5;  // step 5: comparing
         if (cur_hash == key_hash && cur_klen == key_len &&
             memcmp(cur->data, key, key_len) == 0) {
             id_old = cur_id;
             break;
         }
         prev_id = cur_id;
-        dbg_step = 6;  // step 6: reading next pointer
         cur_id  = static_cast<uint32_t>(cur->next_block_id);
     }
 
@@ -147,7 +171,8 @@ static KVResponse kv_put(const KVRequest& req, void* base,
 
 static KVResponse kv_get(const KVRequest& req, void* base,
                            CXLBucket* buckets, uint32_t num_buckets,
-                           WorkerOpStats* stats) {
+                           uint32_t wid, uint32_t num_workers,
+                           WorkerOpStats* stats, bool do_check) {
     KVResponse resp{};
 
     const uint32_t id_req    = req.block_id;
@@ -163,12 +188,14 @@ static KVResponse kv_get(const KVRequest& req, void* base,
     const uint16_t key_len  = req_block->key_len;
     const char*    key      = req_block->data;
 
+    // Check 2: block data integrity
+    if (do_check)
+        check_block_data(wid, num_workers, id_req, key_hash, key_len, key, req.op_type);
+
     resp.op_type    = req.op_type;
     resp.block_id_a = id_req;
     resp.block_id_b = 0;
     resp.t0         = req_block->t0;
-
-    _mm_lfence();
 
     const uint32_t bkt_id = key_hash % num_buckets;
     uint32_t cur_id = buckets[bkt_id].head_block_id;
@@ -199,7 +226,8 @@ static KVResponse kv_get(const KVRequest& req, void* base,
 
 static KVResponse kv_del(const KVRequest& req, void* base,
                            CXLBucket* buckets, uint32_t num_buckets,
-                           WorkerOpStats* stats) {
+                           uint32_t wid, uint32_t num_workers,
+                           WorkerOpStats* stats, bool do_check) {
     KVResponse resp{};
 
     const uint32_t id_cmd    = req.block_id;
@@ -214,6 +242,10 @@ static KVResponse kv_del(const KVRequest& req, void* base,
     const uint32_t key_hash = cmd_block->key_hash;
     const uint16_t key_len  = cmd_block->key_len;
     const char*    key      = cmd_block->data;
+
+    // Check 2: block data integrity
+    if (do_check)
+        check_block_data(wid, num_workers, id_cmd, key_hash, key_len, key, req.op_type);
 
     resp.op_type    = req.op_type;
     resp.block_id_a = id_cmd;
@@ -267,6 +299,7 @@ void two_rw_worker_run(WorkerThreadState* s) {
 
     // Allocate stats on heap only when enabled; nullptr = stats off (zero overhead).
     WorkerOpStats* stats = s->stats_enabled ? new WorkerOpStats{} : nullptr;
+    const bool do_check = s->worker_check;
 
     // ---- UINTR setup (when poller_mode=worker|dual) ----
     bool uintr_ok = false;
@@ -298,23 +331,30 @@ void two_rw_worker_run(WorkerThreadState* s) {
         if (got) {
             req.t2 = __rdtscp(&aux);
 
-            // Log first few ops and every 1000th to track progress
-            // if (ops_done < 5 || (ops_done % 1000 == 0 && ops_done <= 10000)) {
-            //     fprintf(stderr, "[W%u] op#%lu block_id=%u op=%u\n",
-            //             wid, ops_done, req.block_id, req.op_type);
-            // }
+            // Check 1: SN routing — req.worker_id must match this worker's id
+            if (do_check && __builtin_expect(req.worker_id != wid, 0)) {
+                tl_route_mismatches++;
+                fprintf(stderr,
+                        "[W%u] ROUTE_MISMATCH #%lu: req.worker_id=%u "
+                        "(expected %u) block_id=%u client_id=%u op=%u\n",
+                        wid, tl_route_mismatches, req.worker_id, wid,
+                        req.block_id, req.client_id, req.op_type);
+            }
 
             KVResponse resp;
             switch (static_cast<OpType>(req.op_type)) {
                 case OpType::PUT:
                 case OpType::UPDATE:
-                    resp = kv_put(req, pool_base, buckets, num_buckets, stats);
+                    resp = kv_put(req, pool_base, buckets, num_buckets,
+                                  wid, num_workers, stats, do_check);
                     break;
                 case OpType::GET:
-                    resp = kv_get(req, pool_base, buckets, num_buckets, stats);
+                    resp = kv_get(req, pool_base, buckets, num_buckets,
+                                  wid, num_workers, stats, do_check);
                     break;
                 case OpType::DEL:
-                    resp = kv_del(req, pool_base, buckets, num_buckets, stats);
+                    resp = kv_del(req, pool_base, buckets, num_buckets,
+                                  wid, num_workers, stats, do_check);
                     break;
                 default:
                     resp = KVResponse{};
@@ -371,11 +411,13 @@ void two_rw_worker_run(WorkerThreadState* s) {
 
     // Store exit stats for the main thread to collect after join.
     // No printing here — main thread prints all workers in order.
-    s->exit_ops_done       = ops_done;
-    s->exit_empty_polls    = empty_polls;
-    s->exit_resp_fullwaits = resp_fullwaits;
-    s->exit_uintr_wakeups  = uintr_wakeups;
-    s->exit_stats          = stats;   // transfer ownership; main thread frees
+    s->exit_ops_done          = ops_done;
+    s->exit_empty_polls       = empty_polls;
+    s->exit_resp_fullwaits    = resp_fullwaits;
+    s->exit_uintr_wakeups     = uintr_wakeups;
+    s->exit_route_mismatches  = tl_route_mismatches;
+    s->exit_block_mismatches  = tl_block_mismatches;
+    s->exit_stats             = stats;   // transfer ownership; main thread frees
 }
 
 } // namespace TwoRW
