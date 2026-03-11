@@ -1,0 +1,78 @@
+SharedKV Architecture Specification: Multi-Node Replication & Fabric-Level Redundancy
+Version: 1.7 (High Availability / CXL Fabric Optimized)
+Topology: 2 Hosts, 3 CXL Memory Pools (A, B, C), 1 CXL Switch
+Date: 2026-03-09
+
+===============================================================================
+1. 硬件拓扑与物理映射 (Physical Topology)
+===============================================================================
+系统包含 3 个物理隔离的 CXL 内存池，作为独立故障域。
+- 内存角色：Pool A (Primary), Pool B (Secondary), Pool C (Tertiary)。
+- 统一块映射：一个逻辑 block_id 同时对应三个物理地址：
+  Addr_A = Base_A + (block_id << 11)
+  Addr_B = Base_B + (block_id << 11)
+  Addr_C = Base_C + (block_id << 11)
+
+- 访问路径：Host 1/2 通过 CXL Switch 拥有对 Pool A/B/C 的对等读写权限。
+
+===============================================================================
+2. 强一致性更新协议 (3-Way Parallel Update Protocol)
+===============================================================================
+为了维持零拷贝特性，由当前 Key Range 的负责人 (Owner Host) 直接进行跨池写入。
+
+2.1 写入流程 (PUT/UPDATE)：
+1. 分发：Synchronizer 将请求发送至 Owner Host。
+2. 准备：Worker 从全局池分配 id_new。
+3. 并行写入 (Parallel Data Write)：
+   Worker 向 Pool A, B, C 的 UnifiedBlock[id_new] 发起并行写入。
+   [关键：使用 NT-Stores 或 AVX-512 绕过缓存或确保写入到达存储端]
+4. 持久化屏障：调用 _mm_sfence() 确保三路数据均已到达 CXL 链路层。
+5. 原子索引提交 (Sequential Index Commit)：
+   - 先更新备份池 (Pool B, Pool C) 的哈希索引 (next_block_id / head_block_id)。
+   - 最后更新主池 (Pool A) 的哈希索引。
+   - 结果：通过“由后向前”的更新顺序确保崩溃一致性 (Crash Consistency)。
+6. 交换回收：返回 id_old，清理三路副本中的旧块。
+
+===============================================================================
+3. 读取策略与缓存一致性 (Read Strategy & Coherence)
+===============================================================================
+3.1 读取路由：
+- 默认读取：Host 优先读取物理链路最近或负载最低的 Pool (通常是 Pool A)。
+- 校验读取：在需要极高可靠性的场景下，比对三路副本的 GSN 或 Checksum。
+
+3.2 跨机缓存失效 (Cross-Host Coherence)：
+- 方案 A (硬件级)：利用 CXL 3.0 的 CXL.cache 协议进行硬件背向失效 (Back-invalidation)。
+- 方案 B (软件级)：在读取哈希桶前，检查 SystemManifest 中的 Global_Epoch。若 Epoch 改变，则强制刷新本地缓存行或使用非缓存指令。
+
+===============================================================================
+4. 故障监测与恢复协议 (Fault Tolerance & Recovery)
+===============================================================================
+4.1 故障场景处理：
+- 单 Pool 掉线 (Pool Failure)：
+  Monitor 标记该 Pool 为 OFFLINE。所有读写自动切换至剩余的 2 个 Pool。
+- 副本同步 (Re-sync)：
+  Pool 恢复后，系统根据 GSN 扫描缺失的块，从存活 Pool 增量同步数据。
+- Host 掉线 (Host Failure)：
+  存活 Host 检测到心跳超时，接管哈希环上受影响的 Key Range。由于 Block 存在于共享 Pool 中，接管者只需重新加载索引。
+
+4.2 系统清单扩展 (Manifest Extension)：
+SystemManifest 需记录每个 Pool 的健康状态：
+struct PoolStatus {
+    bool is_online;
+    uint64_t last_sync_gsn;
+    uint64_t base_address;
+};
+
+===============================================================================
+5. 性能与资源抉择 (Trade-offs)
+===============================================================================
+- 写入带宽：Replication 会消耗 3 倍的 CXL 总线带宽。若 Switch 支持 Multicast (组播)，应启用组播以降低 CPU 压力。
+- 读延迟：维持在单次 CXL 往返 (RTT)，不受副本数影响。
+- 存储开销：300% 物理空间占用，换取 TMR (三模冗余) 级别的可靠性。
+
+===============================================================================
+6. 实现指南 (Implementation Tips for Claude Code)
+===============================================================================
+1. 实现 MultiPoolPtr 类，封装对 A/B/C 三路地址的同步写入逻辑。
+2. 在更新 Bucket 指针时，严格遵循从备份到主本的写入顺序。
+3. 实现简单的 Quorum 逻辑：只要 2 个副本写入成功即可认为提交，后台修复第 3 个。

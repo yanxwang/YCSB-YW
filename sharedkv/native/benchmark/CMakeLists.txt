@@ -27,7 +27,8 @@ add_executable(sharedkv_2rw_benchmark
     ${TWO_RW_CORE_SOURCES}
 )
 
-target_compile_options(sharedkv_2rw_benchmark PRIVATE -muintr)
+# target_compile_options(sharedkv_2rw_benchmark PRIVATE -muintr)
+target_compile_options(sharedkv_2rw_benchmark PRIVATE -muintr -mclflushopt -mclwb)
 target_link_libraries(sharedkv_2rw_benchmark pthread numa rt)
 
 install(TARGETS sharedkv_2rw_benchmark RUNTIME DESTINATION bin)

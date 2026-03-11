@@ -101,7 +101,8 @@ struct TwoRWConfig {
     // When cluster_config_path is empty, single-machine mode (backward compat).
     // When set, global counts come from config file; local ranges from node_id.
     std::string cluster_config_path;              // --cluster-config <path>
-    std::string cxl_device_path;                  // --cxl-device <path> (DAX, multi-machine only)
+    std::string cxl_device_path;                  // --cxl-device <path> (DAX devdax mode)
+    uint64_t    cxl_phys_base   = 0;              // --cxl-phys-base <addr> (system-ram mode via /dev/mem)
     uint32_t node_id            = 0;              // --node-id (0 = master)
     uint32_t num_nodes          = 1;              // total machines in cluster
     // Per-node ranges (global indices)

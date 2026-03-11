@@ -151,7 +151,8 @@ static void print_usage(const char* prog) {
         "Multi-machine:\n"
         "  --node-id N              This node's ID (0 = master)     (default: 0)\n"
         "  --num-nodes N            Total machines in cluster        (default: 1)\n"
-        "  --cxl-device <path>      CXL DAX device (e.g. /dev/dax0.0)\n"
+        "  --cxl-device <path>      CXL DAX device (devdax mode, e.g. /dev/dax0.0)\n"
+        "  --cxl-phys-base <addr>   CXL physical base addr (system-ram mode via /dev/mem)\n"
         "  --global-sn-start N      First global SN index for this node\n"
         "  --global-sn-count N      Number of SNs on this node\n"
         "  --global-worker-start N  First global worker index for this node\n"
@@ -300,6 +301,9 @@ int main(int argc, char** argv) {
         } else if (strcmp(argv[i], "--cxl-device") == 0) {
             if (i + 1 >= argc) { fprintf(stderr, "ERROR: --cxl-device requires an argument\n"); exit(1); }
             cfg.cxl_device_path = argv[++i];
+        } else if (strcmp(argv[i], "--cxl-phys-base") == 0) {
+            if (i + 1 >= argc) { fprintf(stderr, "ERROR: --cxl-phys-base requires an argument\n"); exit(1); }
+            cfg.cxl_phys_base = strtoull(argv[++i], nullptr, 0);
         } else if (strcmp(argv[i], "--global-sn-start") == 0) {
             cfg.global_sn_start = next_u32("--global-sn-start");
         } else if (strcmp(argv[i], "--global-sn-count") == 0) {
@@ -392,7 +396,7 @@ int main(int argc, char** argv) {
     printf("  CPU layout:\n");
     printf("    Poller:     CPU 0\n");
     for (uint32_t k = 0; k < s; k++)
-        printf("    SN%u:        CPU %u\n", k, k + 1);
+        printf("    SN%u:        CPU %u\n", k, k + 2);
     printf("    Workers:    CPU %d..%d\n", w_cpu, w_cpu + (int)m - 1);
     printf("    ReqTh:      CPU %d..%d\n", client_cpu_start,
            client_cpu_start + static_cast<int>(n) - 1);

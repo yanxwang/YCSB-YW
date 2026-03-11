@@ -64,18 +64,24 @@ static inline UnifiedBlock* ub(void* base, uint32_t id) {
 // Worker swaps id_new in, returns id_old via block_id_a (0 = new key).
 // ============================================================================
 
+static thread_local uint64_t put_call_count = 0;
+
 static KVResponse kv_put(const KVRequest& req, void* base,
                            CXLBucket* buckets, uint32_t num_buckets,
                            WorkerOpStats* stats) {
     KVResponse resp{};
+    put_call_count++;
 
     const uint32_t id_new    = req.block_id;
     UnifiedBlock*  block_new = ub(base, id_new);
 
+    // Diagnostic: volatile reads with checkpoint markers
+    volatile uint32_t dbg_step = 1;  // step 1: read block header
     const uint32_t key_hash = block_new->key_hash;
     const uint16_t key_len  = block_new->key_len;
     const char*    key      = block_new->data;
 
+    dbg_step = 2;  // step 2: read bucket head
     const uint32_t bkt_id = key_hash % num_buckets;
     CXLBucket*     bucket = &buckets[bkt_id];
 
@@ -84,15 +90,21 @@ static KVResponse kv_put(const KVRequest& req, void* base,
     uint32_t id_old  = 0;
     uint32_t depth   = 0;
 
+    dbg_step = 3;  // step 3: chain traversal
     while (cur_id != 0) {
         UnifiedBlock* cur = ub(base, cur_id);
         depth++;
-        if (cur->key_hash == key_hash && cur->key_len == key_len &&
+        dbg_step = 4;  // step 4: reading chain node fields
+        uint32_t cur_hash = cur->key_hash;
+        uint16_t cur_klen = cur->key_len;
+        dbg_step = 5;  // step 5: comparing
+        if (cur_hash == key_hash && cur_klen == key_len &&
             memcmp(cur->data, key, key_len) == 0) {
             id_old = cur_id;
             break;
         }
         prev_id = cur_id;
+        dbg_step = 6;  // step 6: reading next pointer
         cur_id  = static_cast<uint32_t>(cur->next_block_id);
     }
 
@@ -265,6 +277,12 @@ void two_rw_worker_run(WorkerThreadState* s) {
 
         if (got) {
             req.t2 = __rdtscp(&aux);
+
+            // Log first few ops and every 1000th to track progress
+            if (ops_done < 5 || (ops_done % 1000 == 0 && ops_done <= 10000)) {
+                fprintf(stderr, "[W%u] op#%lu block_id=%u op=%u\n",
+                        wid, ops_done, req.block_id, req.op_type);
+            }
 
             KVResponse resp;
             switch (static_cast<OpType>(req.op_type)) {

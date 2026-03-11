@@ -211,6 +211,46 @@ static void* mmap_cxl_device(const char* device_path, uint64_t size) {
 }
 
 // ============================================================================
+// CXL Physical Address Mmap (system-ram mode, multi-machine via /dev/mem)
+// ============================================================================
+
+static void* mmap_cxl_phys(uint64_t phys_base, uint64_t size) {
+    int fd = open("/dev/mem", O_RDWR | O_SYNC);
+    if (fd < 0) {
+        fprintf(stderr, "[2RW] ERROR: cannot open /dev/mem: %s\n"
+                "       (requires root and CONFIG_DEVMEM=y, nopat kernel param may be needed)\n",
+                strerror(errno));
+        return nullptr;
+    }
+
+    void* ptr = mmap(nullptr, size, PROT_READ | PROT_WRITE,
+                     MAP_SHARED | MAP_POPULATE, fd, (off_t)phys_base);
+    close(fd);
+
+    if (ptr == MAP_FAILED) {
+        fprintf(stderr, "[2RW] ERROR: mmap /dev/mem phys=0x%lx size=%lu MB failed: %s\n",
+                (unsigned long)phys_base, (unsigned long)(size >> 20), strerror(errno));
+        return nullptr;
+    }
+
+    fprintf(stderr, "[2RW] CXL physical memory mapped: phys=0x%lx virt=%p (%lu MB)\n",
+            (unsigned long)phys_base, ptr, (unsigned long)(size >> 20));
+    return ptr;
+}
+
+// Helper: resolve CXL memory mapping for multi-machine mode.
+// Priority: --cxl-device (devdax) > --cxl-phys-base (/dev/mem) > NUMA slab (master only).
+static void* resolve_cxl_mmap(const TwoRWConfig& cfg) {
+    if (!cfg.cxl_device_path.empty()) {
+        return mmap_cxl_device(cfg.cxl_device_path.c_str(), cfg.memory_size);
+    }
+    if (cfg.cxl_phys_base != 0) {
+        return mmap_cxl_phys(cfg.cxl_phys_base, cfg.memory_size);
+    }
+    return nullptr;  // caller handles fallback
+}
+
+// ============================================================================
 // Allocate TwoRWContext — common to all init paths
 // ============================================================================
 
@@ -553,10 +593,9 @@ TwoRWContext* two_rw_master_init(const TwoRWConfig& cfg) {
     TwoRWContext* ctx = allocate_context(cfg);
     if (!ctx) return nullptr;
 
-    // Allocate CXL memory
-    if (!cfg.cxl_device_path.empty()) {
-        ctx->cxl_base = mmap_cxl_device(cfg.cxl_device_path.c_str(), cfg.memory_size);
-    } else {
+    // Allocate CXL memory: devdax > /dev/mem > NUMA slab (single-machine fallback)
+    ctx->cxl_base = resolve_cxl_mmap(cfg);
+    if (!ctx->cxl_base) {
         ctx->cxl_base = allocate_cxl_slab(cfg.numa_node, cfg.memory_size);
     }
     if (!ctx->cxl_base) {
@@ -591,14 +630,10 @@ TwoRWContext* two_rw_slave_attach(const TwoRWConfig& cfg) {
     TwoRWContext* ctx = allocate_context(cfg);
     if (!ctx) return nullptr;
 
-    if (cfg.cxl_device_path.empty()) {
-        fprintf(stderr, "[2RW] ERROR: slave_attach requires --cxl-device\n");
-        delete ctx;
-        return nullptr;
-    }
-
-    ctx->cxl_base = mmap_cxl_device(cfg.cxl_device_path.c_str(), cfg.memory_size);
+    // Slave must map the same physical CXL memory as master (devdax or /dev/mem)
+    ctx->cxl_base = resolve_cxl_mmap(cfg);
     if (!ctx->cxl_base) {
+        fprintf(stderr, "[2RW] ERROR: slave_attach requires --cxl-device or --cxl-phys-base\n");
         delete ctx;
         return nullptr;
     }
