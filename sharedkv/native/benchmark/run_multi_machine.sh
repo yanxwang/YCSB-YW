@@ -29,24 +29,21 @@ WORKLOAD_DIR="/mnt/ywang/workloads"
 MEM_GB=64
 NUM_BUCKETS=8388608                # 8M buckets
 NUM_CLIENTS=2                      # total across cluster
-NUM_WORKERS=10                     # total across cluster
+NUM_WORKERS=16                     # total across cluster
 NUM_SYNCHRONIZERS=2                # total across cluster
 QUEUE_DEPTH=1024
 SLOTS=1024
 
-# CXL memory access method (choose one):
-#   Option A: system-ram mode (NUMA node, use /dev/mem)
-CXL_PHYS_BASE=0x4080000000        # from: cat /sys/bus/dax/devices/dax0.0/resource
+# CXL DAX device (devdax mode required for multi-machine)
+CXL_DEVICE="/dev/dax0.0"
 CXL_NUMA=1
-#   Option B: devdax mode (uncomment and set CXL_DEVICE, comment out CXL_PHYS_BASE)
-# CXL_DEVICE="/dev/dax0.0"
 
 # ============================================================================
 # Per-Node Configuration
 # ============================================================================
 #                           Master (node 0)     Slave (node 1)
 #   Synchronizers:          SN0                  SN1
-#   Workers:                W0..W4 (5)           W5..W9 (5)
+#   Workers:                W0..W7 (8)           W8..W15 (8)
 #   Clients:                C0 (1)               C1 (1)
 
 if [[ "$ROLE" == "master" ]]; then
@@ -54,15 +51,15 @@ if [[ "$ROLE" == "master" ]]; then
     GLOBAL_SN_START=0
     GLOBAL_SN_COUNT=1
     GLOBAL_WORKER_START=0
-    GLOBAL_WORKER_COUNT=5
+    GLOBAL_WORKER_COUNT=8
     GLOBAL_CLIENT_START=0
     GLOBAL_CLIENT_COUNT=1
 else
     NODE_ID=1
     GLOBAL_SN_START=1
     GLOBAL_SN_COUNT=1
-    GLOBAL_WORKER_START=5
-    GLOBAL_WORKER_COUNT=5
+    GLOBAL_WORKER_START=8
+    GLOBAL_WORKER_COUNT=8
     GLOBAL_CLIENT_START=1
     GLOBAL_CLIENT_COUNT=1
 fi
@@ -75,9 +72,10 @@ CLIENT_CPU_START=14
 # Benchmark Mode (edit as needed)
 # ============================================================================
 # Throughput mode:
-MODE_ARGS="--duration 30"
+# MODE_ARGS="--duration 30"
 # Latency mode (uncomment to switch):
-# MODE_ARGS="--latency --operations-per-client 1000000"
+MODE_ARGS="--latency"
+#  --operations-per-client 1000000"
 
 # Optional flags:
 EXTRA_ARGS="--local-workerring --verbose --counters"
@@ -85,20 +83,7 @@ EXTRA_ARGS="--local-workerring --verbose --counters"
 # EXTRA_ARGS="$EXTRA_ARGS --stats"
 
 # ============================================================================
-# Build CXL memory argument
-# ============================================================================
-CXL_ARG=""
-if [[ -n "${CXL_DEVICE:-}" ]]; then
-    CXL_ARG="--cxl-device $CXL_DEVICE"
-elif [[ -n "${CXL_PHYS_BASE:-}" ]]; then
-    CXL_ARG="--cxl-phys-base $CXL_PHYS_BASE"
-else
-    echo "ERROR: Set either CXL_DEVICE or CXL_PHYS_BASE"
-    exit 1
-fi
-
-# ============================================================================
-# Run
+# Pre-flight check
 # ============================================================================
 BIN="$(dirname "$0")/build/sharedkv_2rw_benchmark"
 if [[ ! -x "$BIN" ]]; then
@@ -110,7 +95,7 @@ fi
 echo "=============================================="
 echo "  Role:       $ROLE (node $NODE_ID)"
 echo "  Workload:   $WORKLOAD"
-echo "  CXL:        $CXL_ARG"
+echo "  CXL:        $CXL_DEVICE"
 echo "  NUMA:       $CXL_NUMA"
 echo "  Global:     n=$NUM_CLIENTS  m=$NUM_WORKERS  s=$NUM_SYNCHRONIZERS"
 echo "  Local SN:   [$GLOBAL_SN_START .. +$GLOBAL_SN_COUNT)"
@@ -126,7 +111,7 @@ CMD="$BIN \
   --mem-gb $MEM_GB \
   --num-nodes 2 \
   --node-id $NODE_ID \
-  $CXL_ARG \
+  --cxl-device $CXL_DEVICE \
   --num-clients $NUM_CLIENTS \
   --num-workers $NUM_WORKERS \
   --num-synchronizers $NUM_SYNCHRONIZERS \

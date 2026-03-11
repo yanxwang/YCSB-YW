@@ -120,7 +120,11 @@ static void* request_thread_fn(void* arg) {
         }
         block->is_external = 0;
         block->t0 = __rdtscp(&aux);
-        _mm_sfence();  // ensure block data visible before block_id flows
+        // Flush header + key + val to CXL device so cross-machine workers
+        // read correct key_hash/key_len/data instead of stale CXL zeros.
+        // header = 64B (key_hash, key_len, val_len, t0, ...); data = klen + vlen bytes.
+        cxl_flush_range(block, 64 + klen + block->val_len);
+        _mm_sfence();  // order: clwb completes before block_id flows to SN/Worker
 
         // Step 3: Submit (spin if RequestQueue full)
         const uint8_t  op_type   = static_cast<uint8_t>(ycsb_to_2rw_op(op.op_type));

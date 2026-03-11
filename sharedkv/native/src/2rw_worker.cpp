@@ -75,6 +75,14 @@ static KVResponse kv_put(const KVRequest& req, void* base,
     const uint32_t id_new    = req.block_id;
     UnifiedBlock*  block_new = ub(base, id_new);
 
+    // Invalidate block_new from local cache so we read RT's freshly clwb'd
+    // data from CXL device.  Needed when RT ran on a different machine.
+    // Header (line 0: key_hash/key_len/val_len/t0) + 2 data lines (up to 128B key).
+    cxl_clflushopt(block_new);                            // line 0: header
+    cxl_clflushopt(static_cast<char*>(static_cast<void*>(block_new)) + 64);   // line 1
+    cxl_clflushopt(static_cast<char*>(static_cast<void*>(block_new)) + 128);  // line 2
+    _mm_lfence();  // wait for all clflushopt + prior loads to complete
+
     // Diagnostic: volatile reads with checkpoint markers
     volatile uint32_t dbg_step = 1;  // step 1: read block header
     const uint32_t key_hash = block_new->key_hash;
@@ -145,6 +153,12 @@ static KVResponse kv_get(const KVRequest& req, void* base,
     const uint32_t id_req    = req.block_id;
     UnifiedBlock*  req_block = ub(base, id_req);
 
+    // Invalidate req_block from local cache to read RT's freshly clwb'd data.
+    cxl_clflushopt(req_block);
+    cxl_clflushopt(static_cast<char*>(static_cast<void*>(req_block)) + 64);
+    cxl_clflushopt(static_cast<char*>(static_cast<void*>(req_block)) + 128);
+    _mm_lfence();
+
     const uint32_t key_hash = req_block->key_hash;
     const uint16_t key_len  = req_block->key_len;
     const char*    key      = req_block->data;
@@ -190,6 +204,12 @@ static KVResponse kv_del(const KVRequest& req, void* base,
 
     const uint32_t id_cmd    = req.block_id;
     UnifiedBlock*  cmd_block = ub(base, id_cmd);
+
+    // Invalidate cmd_block from local cache to read RT's freshly clwb'd data.
+    cxl_clflushopt(cmd_block);
+    cxl_clflushopt(static_cast<char*>(static_cast<void*>(cmd_block)) + 64);
+    cxl_clflushopt(static_cast<char*>(static_cast<void*>(cmd_block)) + 128);
+    _mm_lfence();
 
     const uint32_t key_hash = cmd_block->key_hash;
     const uint16_t key_len  = cmd_block->key_len;
@@ -279,10 +299,10 @@ void two_rw_worker_run(WorkerThreadState* s) {
             req.t2 = __rdtscp(&aux);
 
             // Log first few ops and every 1000th to track progress
-            if (ops_done < 5 || (ops_done % 1000 == 0 && ops_done <= 10000)) {
-                fprintf(stderr, "[W%u] op#%lu block_id=%u op=%u\n",
-                        wid, ops_done, req.block_id, req.op_type);
-            }
+            // if (ops_done < 5 || (ops_done % 1000 == 0 && ops_done <= 10000)) {
+            //     fprintf(stderr, "[W%u] op#%lu block_id=%u op=%u\n",
+            //             wid, ops_done, req.block_id, req.op_type);
+            // }
 
             KVResponse resp;
             switch (static_cast<OpType>(req.op_type)) {

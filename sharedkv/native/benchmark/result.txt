@@ -1,683 +1,145 @@
-wang@emr:~/YCSB-YW/sharedkv/native/benchmark$ ./build/sharedkv_2rw_benchmark --workload workloada --numa 2 --num-clients 1 --num-workers 10 --client-cpu-start 16 --worker-cpu-start 3 --latency --local-workerring --stats --verbose --counters
-==============================================
-SharedKV 2RW YCSB Benchmark
-==============================================
-  Workload:              workloada
-  NUMA node:             2
-  num_clients (n):       1
-  num_workers (m):       10
-  num_synchronizers (s): 1  (workers per SN: 10)
-  slots_per_client:      1024
-  num_buckets:           8388608
-  queue_depth:           1024
-  memory_size:           64 GB
-  CPU layout:
-    Poller:     CPU 0
-    SN0:        CPU 1
-    Workers:    CPU 3..12
-    ReqTh:      CPU 16..16
-    RespTh:     CPU 17..17
-  dequeue_batch:         8
-  read_ack_batch:        32
-  local_workerring:      yes (DRAM)
-  stats:                 enabled
-  counters:              enabled
-  verbose:               enabled
-  Mode:         Latency  (auto ops/client from workload)
-==============================================
+root@debian-6:~/YCSB-YW/sharedkv/native/benchmark# gdb -p 92392
+GNU gdb (Debian 16.3-1) 16.3
+Copyright (C) 2024 Free Software Foundation, Inc.
+License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>
+This is free software: you are free to change and redistribute it.
+There is NO WARRANTY, to the extent permitted by law.
+Type "show copying" and "show warranty" for details.
+This GDB was configured as "x86_64-linux-gnu".
+Type "show configuration" for configuration details.
+For bug reporting instructions, please see:
+<https://www.gnu.org/software/gdb/bugs/>.
+Find the GDB manual and other documentation resources online a--Type <RET> for more, q to quit, c to continue without paging--
+t:
+    <http://www.gnu.org/software/gdb/documentation/>.
 
-[Main] Loading workload files...
-[Benchmark] Loaded 10000000 operations from workloads/workloada_load.txt
-[Benchmark] Loaded 10000000 operations from workloads/workloada_trans.txt
-[Main] load_ops=10000000  trans_ops=10000000
+For help, type "help".
+Type "apropos word" to search for commands related to "word".
+Attaching to process 92392
+[New LWP 92500]
+[New LWP 92499]
+[New LWP 92486]
+[New LWP 92485]
+[New LWP 92484]
+[New LWP 92483]
+[New LWP 92482]
+--Type <RET> for more, q to quit, c to continue without paging--
+[New LWP 92481]
+[New LWP 92480]
+[New LWP 92479]
+[New LWP 92478]
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib/x86_64-linux-gnu/libthread_db.so.1".
+__syscall_cancel_arch ()
+    at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
 
-  ops_per_client (auto): 10000000  (10000000 ops / 1 clients)
-  TSC frequency: ~2100 MHz
-
-[Main] Initializing 2RW context...
-[2RW Config]
-  numa_node            = 2
-  num_clients (n)      = 1
-  num_workers (m)      = 10
-  num_synchronizers(s) = 1  (workers per SN: 10)
-  slots_per_client     = 1024  (blocks pre-alloc per client)
-  num_buckets          = 8388608
-  queue_depth          = 1024
-  memory_size          = 65536 MB
-  worker_cpu_start     = 3  (workers on CPU 3..12)
-  local_workerring     = yes (DRAM)
-  poller_mode          = response
-[2RW] NUMA topology: CPU0_node=0  CXL_node=2  OK (CPU0 local DRAM != CXL node)
-[2RW] NUMA node 2: total=262144 MB, free=262029 MB, requested=65536 MB
-[2RW] CXL memory initialized. Layout:
-  header            @ 0x0000000000  (64B)
-  hash_table        @ 0x0000000040  (8388608 buckets × 8B = 65536 KB)
-  request_queues    @ 0x0004000040  (1 clients × 1 SNs = 1 queues)
-  worker_rings      @ 0x0004040100  (10 rings)
-  response_queues   @ 0x00042c0880  (1 × 10 = 10 queues)
-  globalidmap       @ 0x0004541000  (26815179 blocks → 3351898 B bitmap)
-  unifiedblockpool  @ 0x0004873800  (26815179 blocks × 2048B = 52373 MB)
-  spillover         @ 0x0ccddd9000  (1 clients × 13404316 KB = 13404316 KB)
-[2RW] sn_req_consumers[0]=0x7ff0370c2000  NUMA node 0  (expected 0)  OK
-[2RW] sn_ring_producers[0]=0x7ff0370c1000  NUMA node 0  (expected 0)  OK
-[2RW] local_workerring: allocated 10 DRAM rings (256 KB each)
-[2RW] sync_state[0].gsn=0x7ff0370c0080  NUMA node 0  (expected 0)  OK
-[Main] Starting core threads (Sync, Poller, Workers)...
-[RespPoller] Started. Monitoring clients [0..1) × 10 workers
-[2RW] Threads started: poller_mode=response, SN[0..0]=CPU[2..2], Workers[0..9]=CPU[3..12]
-
-[Main] ===== LOAD PHASE =====
-[RespTh-0] UINTR fd=3, pinned CPU 17
-[SN0] GSN Microbenchmark (isolated, 500000 iters, rdtscp): 18.08 ticks/fetch_add(1)
-[SN0] sync_state->gsn address: 0x7ff0370c0080
-[SN0] Started. Polling 1 RequestQueues → 10 WorkerRings (workers 0..9)
-[SN0]   Mode: dequeue_batch_pipelined (DEQUEUE_BATCH=8  READ_ACK_BATCH=32)
-[SN0]   Timing: rdtscp. A=pipelined_batch_deq/op  C=enq/op  F=flush/op
-[SN0] ops= 200000  wall=1774.5  A(deq/op)=1545.1  C(enq/op)=48.7  F(flush/op)=1.1  fw=0  empty=23613
-[SN0] ops= 400000  wall=1860.6  A(deq/op)=1580.3  C(enq/op)=48.0  F(flush/op)=1.1  fw=0  empty=51771
-[SN0] ops= 600000  wall=1868.9  A(deq/op)=1594.7  C(enq/op)=47.6  F(flush/op)=1.1  fw=0  empty=79886
-[SN0] ops= 800000  wall=1868.6  A(deq/op)=1601.6  C(enq/op)=47.4  F(flush/op)=1.1  fw=0  empty=108701
-[SN0] ops=1000000  wall=1865.9  A(deq/op)=1605.5  C(enq/op)=47.2  F(flush/op)=1.1  fw=0  empty=137342
-[SN0] ops=1200000  wall=1863.5  A(deq/op)=1607.6  C(enq/op)=47.2  F(flush/op)=1.1  fw=0  empty=165817
-[SN0] ops=1400000  wall=1864.4  A(deq/op)=1609.2  C(enq/op)=47.2  F(flush/op)=1.1  fw=0  empty=194264
-[SN0] ops=1600000  wall=1862.0  A(deq/op)=1610.3  C(enq/op)=47.1  F(flush/op)=1.1  fw=0  empty=222604
-[SN0] ops=1800000  wall=1863.1  A(deq/op)=1611.0  C(enq/op)=47.1  F(flush/op)=1.1  fw=0  empty=251282
-[SN0] ops=2000000  wall=1940.8  A(deq/op)=1612.6  C(enq/op)=47.1  F(flush/op)=1.1  fw=0  empty=295994
-[SN0] ops=2200000  wall=2544.4  A(deq/op)=1625.7  C(enq/op)=47.2  F(flush/op)=1.1  fw=0  empty=456416
-[SN0] ops=2400000  wall=2540.3  A(deq/op)=1635.8  C(enq/op)=47.2  F(flush/op)=1.1  fw=0  empty=618054
-[SN0] ops=2600000  wall=2098.4  A(deq/op)=1638.0  C(enq/op)=47.2  F(flush/op)=1.1  fw=0  empty=692306
-[SN0] ops=2800000  wall=1861.6  A(deq/op)=1636.5  C(enq/op)=47.2  F(flush/op)=1.1  fw=0  empty=720512
-[SN0] ops=3000000  wall=1864.4  A(deq/op)=1635.3  C(enq/op)=47.2  F(flush/op)=1.1  fw=0  empty=748976
-[SN0] ops=3200000  wall=1862.8  A(deq/op)=1634.1  C(enq/op)=47.1  F(flush/op)=1.1  fw=0  empty=777275
-[SN0] ops=3400000  wall=1859.9  A(deq/op)=1633.1  C(enq/op)=47.1  F(flush/op)=1.1  fw=0  empty=805283
-[SN0] ops=3600000  wall=1863.6  A(deq/op)=1632.2  C(enq/op)=47.1  F(flush/op)=1.1  fw=0  empty=833914
-[SN0] ops=3800000  wall=1866.6  A(deq/op)=1631.6  C(enq/op)=47.1  F(flush/op)=1.1  fw=0  empty=862341
-[SN0] ops=4000000  wall=1861.1  A(deq/op)=1630.8  C(enq/op)=47.1  F(flush/op)=1.1  fw=0  empty=890949
-[SN0] ops=4200000  wall=1861.7  A(deq/op)=1630.2  C(enq/op)=47.1  F(flush/op)=1.1  fw=0  empty=919147
-[SN0] ops=4400000  wall=1857.2  A(deq/op)=1629.4  C(enq/op)=47.1  F(flush/op)=1.1  fw=0  empty=947217
-[SN0] ops=4600000  wall=1858.2  A(deq/op)=1628.8  C(enq/op)=47.1  F(flush/op)=1.1  fw=0  empty=975009
-[SN0] ops=4800000  wall=1862.4  A(deq/op)=1628.3  C(enq/op)=47.1  F(flush/op)=1.1  fw=0  empty=1003682
-[SN0] ops=5000000  wall=1856.8  A(deq/op)=1627.6  C(enq/op)=47.1  F(flush/op)=1.1  fw=0  empty=1031888
-[SN0] ops=5200000  wall=1860.5  A(deq/op)=1627.2  C(enq/op)=47.0  F(flush/op)=1.1  fw=0  empty=1060080
-[SN0] ops=5400000  wall=1860.5  A(deq/op)=1626.8  C(enq/op)=47.0  F(flush/op)=1.1  fw=0  empty=1088247
-[SN0] ops=5600000  wall=1865.1  A(deq/op)=1626.6  C(enq/op)=47.0  F(flush/op)=1.1  fw=0  empty=1116434
-[SN0] ops=5800000  wall=1863.7  A(deq/op)=1626.3  C(enq/op)=47.0  F(flush/op)=1.1  fw=0  empty=1144597
-[SN0] ops=6000000  wall=1865.1  A(deq/op)=1626.0  C(enq/op)=47.0  F(flush/op)=1.1  fw=0  empty=1173532
-[SN0] ops=6200000  wall=1862.8  A(deq/op)=1625.8  C(enq/op)=47.0  F(flush/op)=1.1  fw=0  empty=1201648
-[SN0] ops=6400000  wall=1857.4  A(deq/op)=1625.3  C(enq/op)=47.0  F(flush/op)=1.1  fw=0  empty=1230031
-[SN0] ops=6600000  wall=1862.2  A(deq/op)=1625.1  C(enq/op)=47.0  F(flush/op)=1.1  fw=0  empty=1258484
-[SN0] ops=6800000  wall=1858.6  A(deq/op)=1624.8  C(enq/op)=47.0  F(flush/op)=1.1  fw=0  empty=1286290
-[SN0] ops=7000000  wall=1864.3  A(deq/op)=1624.6  C(enq/op)=47.0  F(flush/op)=1.1  fw=0  empty=1314522
-[SN0] ops=7200000  wall=1854.3  A(deq/op)=1624.3  C(enq/op)=47.0  F(flush/op)=1.1  fw=0  empty=1342309
-[SN0] ops=7400000  wall=1861.1  A(deq/op)=1624.1  C(enq/op)=47.0  F(flush/op)=1.1  fw=0  empty=1370545
-[SN0] ops=7600000  wall=1864.9  A(deq/op)=1623.9  C(enq/op)=47.0  F(flush/op)=1.1  fw=0  empty=1399090
-[SN0] ops=7800000  wall=1861.4  A(deq/op)=1623.7  C(enq/op)=47.0  F(flush/op)=1.1  fw=0  empty=1427613
-[SN0] ops=8000000  wall=1862.7  A(deq/op)=1623.6  C(enq/op)=47.0  F(flush/op)=1.1  fw=0  empty=1455886
-[SN0] ops=8200000  wall=1863.2  A(deq/op)=1623.5  C(enq/op)=47.0  F(flush/op)=1.1  fw=0  empty=1484450
-[SN0] ops=8400000  wall=1857.2  A(deq/op)=1623.2  C(enq/op)=47.0  F(flush/op)=1.1  fw=0  empty=1512739
-[SN0] ops=8600000  wall=1865.2  A(deq/op)=1623.0  C(enq/op)=47.0  F(flush/op)=1.1  fw=0  empty=1541979
-[SN0] ops=8800000  wall=1859.9  A(deq/op)=1622.8  C(enq/op)=47.0  F(flush/op)=1.1  fw=0  empty=1570648
-[SN0] ops=9000000  wall=1852.2  A(deq/op)=1622.5  C(enq/op)=47.0  F(flush/op)=1.1  fw=0  empty=1598996
-[SN0] ops=9200000  wall=1858.1  A(deq/op)=1622.3  C(enq/op)=47.0  F(flush/op)=1.1  fw=0  empty=1627118
-[SN0] ops=9400000  wall=1858.7  A(deq/op)=1622.1  C(enq/op)=47.0  F(flush/op)=1.1  fw=0  empty=1655363
-[SN0] ops=9600000  wall=1858.0  A(deq/op)=1621.9  C(enq/op)=47.0  F(flush/op)=1.1  fw=0  empty=1684013
-[SN0] ops=9800000  wall=1858.5  A(deq/op)=1621.7  C(enq/op)=47.0  F(flush/op)=1.1  fw=0  empty=1712288
-[SN0] ops=10000000  wall=1857.6  A(deq/op)=1621.6  C(enq/op)=47.0  F(flush/op)=1.1  fw=0  empty=1740120
---- Client Thread Summary ---
-  Client 0    submitted=10000000    completed=10000000    failed=0
------------------------------
-
-===== Pipeline Counters =====
-
---- Request Threads (enqueue → RequestQueue) ---
-  Client       submitted     enq_waits
-  RT-0          10000000           389
-  TOTAL         10000000           389
-
---- Response Threads (dequeue ← ResponseQueue) ---
-  Client       completed        failed  drain_rounds  empty_rounds   uintr_wakes
-  RT-0          10000000             0          7192          1878          7191
-  TOTAL         10000000             0          7192          1878          7191
-  recycle_waits (total): 0
-
-=============================
-
-==============================================
-LOAD PHASE Results:
-==============================================
-  Total ops:    10000000
-  Successful:   10000000
-  Failed:       0
-  Duration:     9.020 s
-  Throughput:   1108708 ops/s
-==============================================
+warning: 56     ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S: No such file or directory
+(gdb) info threads
+  Id   Target Id                                           Frame 
+* 1    Thread 0x7f9da1cd0780 (LWP 92392) "sharedkv_2rw_be" __syscall_cancel_arch ()
+    at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+  2    Thread 0x7f9d9ccc36c0 (LWP 92500) "sharedkv_2rw_be" CXLSpscProducer<TwoRW::KVRequest, 4096ul>::enqueue (
+    this=0x55921b230830, item=...)
+    at /root/YCSB-YW/sharedkv/native/benchmark/../include/cxl_spsc_queue.h:201
+  3    Thread 0x7f9d9d4c46c0 (LWP 92499) "sharedkv_2rw_be" CXLSpscConsumer<TwoRW::KVResponse, 4096ul>::dequeue_batch_pipelined (this=0x55921ac99b60, items=0x7f9d9d4c3b40, max_count=8)
+--Type <RET> for more, q to quit, c to continue without paging--
+    at /root/YCSB-YW/sharedkv/native/benchmark/../include/cxl_spsc_queue.h:435
+  4    Thread 0x7f9d9dcc56c0 (LWP 92486) "sharedkv_2rw_be" TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (
+    this=0x55921ac42428, item=...)
+    at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:123
+  5    Thread 0x7f9d9e4c66c0 (LWP 92485) "sharedkv_2rw_be" 0x0000558f65de3b74 in TwoRW::kv_put (req=..., 
+    base=0x7f8ccec35000, buckets=0x7f8cc9c00040, 
+    num_buckets=8388608, stats=0x0)
+    at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:106
+  6    Thread 0x7f9d9ecc76c0 (LWP 92484) "sharedkv_2rw_be" 0x0--Type <RET> for more, q to quit, c to continue without paging--
+000558f65de4a75 in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x55921ac423f8, item=...)
+    at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:124
+  7    Thread 0x7f9d9f4c86c0 (LWP 92483) "sharedkv_2rw_be" 0x0000558f65de4a75 in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x55921ac423e0, item=...)
+    at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:124
+  8    Thread 0x7f9d9fcc96c0 (LWP 92482) "sharedkv_2rw_be" 0x0000558f65de4a75 in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x55921ac423c8, item=...)
+    at /root/YCSB-YW/sharedkv/native/benchmark/../include/loca--Type <RET> for more, q to quit, c to continue without paging--
+l_spsc_queue.h:124
+  9    Thread 0x7f9da04ca6c0 (LWP 92481) "sharedkv_2rw_be" 0x0000558f65de4a75 in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x55921ac423b0, item=...)
+    at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:124
+  10   Thread 0x7f9da0ccb6c0 (LWP 92480) "sharedkv_2rw_be" 0x0000558f65dcaf1a in std::__atomic_base<bool>::load (
+    this=0x7f9da2260200, __m=std::memory_order_acquire)
+    at /usr/include/c++/14/bits/atomic_base.h:497
+  11   Thread 0x7f9da14cc6c0 (LWP 92479) "sharedkv_2rw_be" 0x0000558f65de4a75 in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x55921ac42380, item=...)
+--Type <RET> for more, q to quit, c to continue without paging--
+    at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:124
+  12   Thread 0x7f9da1ccd6c0 (LWP 92478) "sharedkv_2rw_be" 0x0000558f65de36e7 in std::__atomic_base<unsigned long>::load (
+    this=0x55935f151640, __m=std::memory_order_acquire)
+    at /usr/include/c++/14/bits/atomic_base.h:497
+(gdb) 
 
 
-=== Hash Table Bucket Chain Length Distribution ===
-  Total buckets : 8388608
-  Non-empty     : 5916272  (70.5%)
-  Total nodes   : 10000000
-  Max chain     : 9
-  Avg chain len (all buckets)       : 1.1921
-  Avg chain len (non-empty buckets) : 1.6903
+root@debian-6:~/YCSB-YW/sharedkv/native/benchmark# gdb -p 88956
+GNU gdb (Debian 16.3-1) 16.3
+Copyright (C) 2024 Free Software Foundation, Inc.
+License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>
+This is free software: you are free to change and redistribute it.
+There is NO WARRANTY, to the extent permitted by law.
+Type "show copying" and "show warranty" for details.
+This GDB was configured as "x86_64-linux-gnu".
+Type "show configuration" for configuration details.
+--Type <RET> for more, q to quit, c to continue without paging--
+For bug reporting instructions, please see:
+<https://www.gnu.org/software/gdb/bugs/>.
+Find the GDB manual and other documentation resources online at:
+    <http://www.gnu.org/software/gdb/documentation/>.
 
-  Depth      # Buckets       %
-  0            2472336  29.47%
-  1            3096914  36.92%
-  2            1859106  22.16%
-  3             714596   8.52%
-  4             196252   2.34%
-  5              41478   0.49%
-  6               6910   0.08%
-  7                912   0.01%
-  8                 92   0.00%
-  9                 12   0.00%
-===================================================
+For help, type "help".
+Type "apropos word" to search for commands related to "word".
+Attaching to process 88956
+[New LWP 89007]
+--Type <RET> for more, q to quit, c to continue without paging--
+[New LWP 89006]
+[New LWP 89005]
+[New LWP 89004]
+[New LWP 89003]
+[New LWP 89002]
+[New LWP 89001]
+[New LWP 89000]
+[New LWP 88999]
+[New LWP 88998]
+--Type <RET> for more, q to quit, c to continue without paging--
+[New LWP 88997]
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib/x86_64-linux-gnu/libthread_db.so.1".
+__syscall_cancel_arch ()
+    at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
 
-[Main] ===== TRANSACTION PHASE =====
-[RespTh-0] UINTR fd=4, pinned CPU 17
-[SN0] ops=10200000  wall=5500.2  A(deq/op)=1614.7  C(enq/op)=47.0  F(flush/op)=1.1  fw=0  empty=2736666
-[SN0] ops=10400000  wall=1445.8  A(deq/op)=1608.4  C(enq/op)=47.0  F(flush/op)=1.1  fw=0  empty=2740269
-[SN0] ops=10600000  wall=1486.6  A(deq/op)=1602.9  C(enq/op)=47.1  F(flush/op)=1.1  fw=0  empty=2746779
-[SN0] ops=10800000  wall=1500.7  A(deq/op)=1597.9  C(enq/op)=47.0  F(flush/op)=1.1  fw=0  empty=2753870
-[SN0] ops=11000000  wall=1498.7  A(deq/op)=1593.0  C(enq/op)=47.0  F(flush/op)=1.1  fw=0  empty=2760604
-[SN0] ops=11200000  wall=1540.1  A(deq/op)=1588.8  C(enq/op)=47.0  F(flush/op)=1.1  fw=0  empty=2771514
-[SN0] ops=11400000  wall=1501.3  A(deq/op)=1584.2  C(enq/op)=47.0  F(flush/op)=1.1  fw=0  empty=2778634
-[SN0] ops=11600000  wall=1502.5  A(deq/op)=1579.9  C(enq/op)=47.0  F(flush/op)=1.1  fw=0  empty=2785792
-[SN0] ops=11800000  wall=1499.7  A(deq/op)=1575.6  C(enq/op)=47.0  F(flush/op)=1.1  fw=0  empty=2792664
-[SN0] ops=12000000  wall=1502.8  A(deq/op)=1571.6  C(enq/op)=47.0  F(flush/op)=1.1  fw=0  empty=2799536
-[SN0] ops=12200000  wall=1600.2  A(deq/op)=1569.0  C(enq/op)=47.0  F(flush/op)=1.1  fw=0  empty=2811670
-[SN0] ops=12400000  wall=1594.4  A(deq/op)=1566.4  C(enq/op)=47.0  F(flush/op)=1.1  fw=0  empty=2822772
-[SN0] ops=12600000  wall=1575.3  A(deq/op)=1563.7  C(enq/op)=47.0  F(flush/op)=1.1  fw=0  empty=2832012
-[SN0] ops=13800000  wall=1460.6  A(deq/op)=1460.4  C(enq/op)=130.7  F(flush/op)=1.1  fw=19077041  empty=2844326
-[SN0] ops=14000000  wall=1517.6  A(deq/op)=1458.8  C(enq/op)=129.5  F(flush/op)=1.1  fw=19077041  empty=2850891
-[SN0] ops=14200000  wall=1526.8  A(deq/op)=1457.4  C(enq/op)=128.4  F(flush/op)=1.1  fw=19077041  empty=2857222
-[SN0] ops=16200000  wall=1449.1  A(deq/op)=1287.0  C(enq/op)=275.0  F(flush/op)=1.1  fw=61044454  empty=2859619
-[SN0] ops=16600000  wall=1442.5  A(deq/op)=1261.7  C(enq/op)=295.8  F(flush/op)=1.1  fw=68251603  empty=2862159
-[SN0] ops=16800000  wall=1527.5  A(deq/op)=1262.8  C(enq/op)=292.9  F(flush/op)=1.1  fw=68251603  empty=2869594
-[SN0] ops=17000000  wall=1519.1  A(deq/op)=1263.8  C(enq/op)=290.0  F(flush/op)=1.1  fw=68251603  empty=2876199
-[SN0] ops=17200000  wall=1524.0  A(deq/op)=1264.9  C(enq/op)=287.1  F(flush/op)=1.1  fw=68251603  empty=2883324
-[SN0] ops=17400000  wall=1521.5  A(deq/op)=1265.9  C(enq/op)=284.4  F(flush/op)=1.1  fw=68251603  empty=2890198
-[SN0] ops=17600000  wall=1524.5  A(deq/op)=1266.9  C(enq/op)=281.6  F(flush/op)=1.1  fw=68251603  empty=2897254
-[SN0] ops=17800000  wall=1522.0  A(deq/op)=1267.8  C(enq/op)=279.0  F(flush/op)=1.1  fw=68251603  empty=2904053
-[SN0] ops=18000000  wall=1519.1  A(deq/op)=1268.7  C(enq/op)=276.4  F(flush/op)=1.1  fw=68251603  empty=2910480
-[SN0] ops=18200000  wall=1517.0  A(deq/op)=1269.6  C(enq/op)=273.9  F(flush/op)=1.1  fw=68251603  empty=2916729
-[SN0] ops=18400000  wall=1515.9  A(deq/op)=1270.5  C(enq/op)=271.4  F(flush/op)=1.1  fw=68251603  empty=2922664
-[SN0] ops=20000000  wall=1491.7  A(deq/op)=1174.8  C(enq/op)=358.6  F(flush/op)=1.1  fw=103077797  empty=2924535
---- Client Thread Summary ---
-  Client 0    submitted=10000000    completed=10000000    failed=0  latency_samples=10000000
------------------------------
-
-===== Pipeline Counters =====
-
---- Request Threads (enqueue → RequestQueue) ---
-  Client       submitted     enq_waits
-  RT-0          10000000        126346
-  TOTAL         10000000        126346
-
---- Response Threads (dequeue ← ResponseQueue) ---
-  Client       completed        failed  drain_rounds  empty_rounds   uintr_wakes
-  RT-0          10000000             0             3             0             2
-  TOTAL         10000000             0             3             0             2
-  recycle_waits (total): 154304753
-
-=============================
-
-==============================================
-TRANSACTION PHASE Results:
-==============================================
-  Total ops:    10000000
-  Successful:   10000000
-  Failed:       0
-  Duration:     7.098 s
-  Throughput:   1408766 ops/s
-  Decomposed Latency (10000000 samples, TSC ~2100 MHz):
-  Stage                          avg(us)       p50       p99       max
-  t0→t1 pool→RequestQueue       0.02      0.01      0.01  35146.58
-  t1→t2 Sync dispatch          3797.61    552.75  29348.52  68055.84
-  t2→t3 Worker execution          0.37      0.25      0.88     11.10
-  t0→t3 end-to-end             3797.99    553.22  29349.20  68056.81
-==============================================
-
-[SN0] ===== Final Statistics =====
-[SN0]   total_routed  : 20000000
-[SN0]   empty_polls   : 9542263
-[SN0]   ring_fullwaits: 103077797
-[SN0]   flush calls   : 624708  (batch=32, raw/flush=36.8 ticks)
-[SN0]   wall ticks/op : 2003.4
-[SN0]
-[SN0]   Sub-operation breakdown (rdtscp-serialized, avg ticks/op):
-[SN0]     A  pipelined batch deq/op  : 1174.8  (DEQUEUE_BATCH=8)
-[SN0]     C  ring enqueue/op         :  358.6  (DRAM release-store)
-[SN0]     F  flush amortised/op      :    1.1  (READ_ACK_BATCH=32)
-[SN0]     loop+rdtscp overhead/op    :  468.9
-[SN0]   Per RequestQueue:
-[SN0]     ReqQ[0]: 20000000
-[SN0]   Per WorkerRing (global IDs):
-[SN0]     Worker[0]: enqueued=2022620  fullwaits=0
-[SN0]     Worker[1]: enqueued=2029244  fullwaits=0
-[SN0]     Worker[2]: enqueued=1996213  fullwaits=0
-[SN0]     Worker[3]: enqueued=1999883  fullwaits=0
-[SN0]     Worker[4]: enqueued=1979039  fullwaits=0
-[SN0]     Worker[5]: enqueued=1976848  fullwaits=0
-[SN0]     Worker[6]: enqueued=2054058  fullwaits=0
-[SN0]     Worker[7]: enqueued=2053739  fullwaits=103077797
-[SN0]     Worker[8]: enqueued=1943192  fullwaits=0
-[SN0]     Worker[9]: enqueued=1945164  fullwaits=0
-[RespPoller] Stopped. scan_rounds=58361920  uintrs_sent=56
-[2RW] SN0 final GSN: 20000000
-
-===== Worker Summary (0..9) =====
---- Workers (dequeue ← WorkerRing, enqueue → ResponseQueue) ---
-  Worker        ops_done   empty_polls  resp_fullwaits   uintr_wakes
-  W-0            2022620     292774937             0             0
-  W-1            2029244      78556224             0             0
-  W-2            1996213      98449037             0             0
-  W-3            1999883     101995571             0             0
-  W-4            1979039     108876733             0             0
-  W-5            1976848     105112739             0             0
-  W-6            2054058      60517715       8188428             0
-  W-7            2053739      89757047      13747225             0
-  W-8            1943192     154846806             0             0
-  W-9            1945164     241635772             0             0
-
-    GET         total=  511812  hit=  511812  miss=       0  chain_avg= 1.90
-               depth:  [ 1]=155954  [ 2]=260836  [ 3]=85355  [ 4]=7400  [ 5]=2125  [ 6]=141  [ 8]=1
-    PUT/UPDATE  total= 1510808  hit=  510621  miss= 1000187  chain_avg= 1.02
-               depth:  [ 0]=591456  [ 1]=438630  [ 2]=356144  [ 3]=109115  [ 4]=12142  [ 5]=3043  [ 6]=265  [ 7]=11  [ 8]=2
-    GET         total=  514276  hit=  514276  miss=       0  chain_avg= 1.91
-               depth:  [ 1]=155625  [ 2]=262977  [ 3]=85985  [ 4]=7388  [ 5]=2137  [ 6]=164
-    PUT/UPDATE  total= 1514968  hit=  514781  miss= 1000187  chain_avg= 1.03
-               depth:  [ 0]=591456  [ 1]=438108  [ 2]=359304  [ 3]=110683  [ 4]=12053  [ 5]=3074  [ 6]=278  [ 7]=10  [ 8]=2
-    GET         total=  497962  hit=  497962  miss=       0  chain_avg= 1.64
-               depth:  [ 1]=218934  [ 2]=247725  [ 3]=26804  [ 4]=2272  [ 5]=2176  [ 6]=39  [ 7]=12
-    PUT/UPDATE  total= 1498251  hit=  498098  miss= 1000153  chain_avg= 0.93
-               depth:  [ 0]=592552  [ 1]=499739  [ 2]=343862  [ 3]=51592  [ 4]=7343  [ 5]=3004  [ 6]=135  [ 7]=24
-    GET         total=  499744  hit=  499744  miss=       0  chain_avg= 1.64
-               depth:  [ 1]=219142  [ 2]=249073  [ 3]=27025  [ 4]=2289  [ 5]=2155  [ 6]=49  [ 7]=11
-    PUT/UPDATE  total= 1500139  hit=  499986  miss= 1000153  chain_avg= 0.93
-               depth:  [ 0]=592552  [ 1]=500343  [ 2]=345614  [ 3]=51239  [ 4]=7257  [ 5]=2958  [ 6]=154  [ 7]=22
-    GET         total=  488936  hit=  488936  miss=       0  chain_avg= 1.85
-               depth:  [ 1]=148833  [ 2]=276694  [ 3]=54499  [ 4]=6681  [ 5]=2210  [ 6]=19
-    PUT/UPDATE  total= 1490103  hit=  490071  miss= 1000032  chain_avg= 0.99
-               depth:  [ 0]=591313  [ 1]=431102  [ 2]=373286  [ 3]=79549  [ 4]=11694  [ 5]=3036  [ 6]=111  [ 7]=11  [ 8]=1
-    GET         total=  488497  hit=  488497  miss=       0  chain_avg= 1.85
-               depth:  [ 1]=149621  [ 2]=275152  [ 3]=54848  [ 4]=6680  [ 5]=2179  [ 6]=17
-    PUT/UPDATE  total= 1488351  hit=  488320  miss= 1000031  chain_avg= 0.99
-               depth:  [ 0]=591312  [ 1]=431020  [ 2]=371134  [ 3]=80114  [ 4]=11679  [ 5]=2964  [ 6]=115  [ 7]=12  [ 8]=1
-    GET         total=  527738  hit=  527738  miss=       0  chain_avg= 1.96
-               depth:  [ 1]=173448  [ 2]=205839  [ 3]=143109  [ 4]=4820  [ 5]=500  [ 6]=22
-    PUT/UPDATE  total= 1526320  hit=  526862  miss=  999458  chain_avg= 1.05
-               depth:  [ 0]=591447  [ 1]=455171  [ 2]=300996  [ 3]=167354  [ 4]=9970  [ 5]=1253  [ 6]=119  [ 7]=9  [ 8]=1
-    GET         total=  527711  hit=  527711  miss=       0  chain_avg= 1.97
-               depth:  [ 1]=172701  [ 2]=205570  [ 3]=143930  [ 4]=4971  [ 5]=513  [ 6]=26
-    PUT/UPDATE  total= 1526028  hit=  526570  miss=  999458  chain_avg= 1.05
-               depth:  [ 0]=591447  [ 1]=453862  [ 2]=300691  [ 3]=168875  [ 4]=9827  [ 5]=1197  [ 6]=119  [ 7]=9  [ 8]=1
-    GET         total=  470510  hit=  470510  miss=       0  chain_avg= 1.93
-               depth:  [ 1]=118001  [ 2]=288901  [ 3]=42903  [ 4]=18217  [ 5]=2456  [ 6]=31  [ 7]=1
-    PUT/UPDATE  total= 1472682  hit=  472512  miss= 1000170  chain_avg= 1.01
-               depth:  [ 0]=591368  [ 1]=400416  [ 2]=387067  [ 3]=67164  [ 4]=23349  [ 5]=3179  [ 6]=126  [ 7]=11  [ 8]=2
-    GET         total=  472769  hit=  472769  miss=       0  chain_avg= 1.93
-               depth:  [ 1]=118654  [ 2]=290452  [ 3]=42609  [ 4]=18602  [ 5]=2418  [ 6]=34
-    PUT/UPDATE  total= 1472395  hit=  472224  miss= 1000171  chain_avg= 1.01
-               depth:  [ 0]=591369  [ 1]=401264  [ 2]=385984  [ 3]=67083  [ 4]=23320  [ 5]=3244  [ 6]=119  [ 7]=10  [ 8]=2
---- Response Poller (scan ResponseQueues, send UINTR) ---
-  scan_rounds:  58361920
-  uintrs_sent:  56
-  rounds/uintr: 1042177.1
-
-==================================
-
-
-
-wang@emr:~/YCSB-YW/sharedkv/native/benchmark$ ./build/sharedkv_2rw_benchmark --workload workloada --numa 2 --num-clients 1 --num-workers 10 --client-cpu-start 16 --worker-cpu-start 3 --latency --local-workerring --stats --verbose --counters --dequeue-batch 1 --read-ack-batch 1
-==============================================
-SharedKV 2RW YCSB Benchmark
-==============================================
-  Workload:              workloada
-  NUMA node:             2
-  num_clients (n):       1
-  num_workers (m):       10
-  num_synchronizers (s): 1  (workers per SN: 10)
-  slots_per_client:      1024
-  num_buckets:           8388608
-  queue_depth:           1024
-  memory_size:           64 GB
-  CPU layout:
-    Poller:     CPU 0
-    SN0:        CPU 1
-    Workers:    CPU 3..12
-    ReqTh:      CPU 16..16
-    RespTh:     CPU 17..17
-  dequeue_batch:         1
-  read_ack_batch:        1
-  local_workerring:      yes (DRAM)
-  stats:                 enabled
-  counters:              enabled
-  verbose:               enabled
-  Mode:         Latency  (auto ops/client from workload)
-==============================================
-
-[Main] Loading workload files...
-[Benchmark] Loaded 10000000 operations from workloads/workloada_load.txt
-[Benchmark] Loaded 10000000 operations from workloads/workloada_trans.txt
-[Main] load_ops=10000000  trans_ops=10000000
-
-  ops_per_client (auto): 10000000  (10000000 ops / 1 clients)
-  TSC frequency: ~2100 MHz
-
-[Main] Initializing 2RW context...
-[2RW Config]
-  numa_node            = 2
-  num_clients (n)      = 1
-  num_workers (m)      = 10
-  num_synchronizers(s) = 1  (workers per SN: 10)
-  slots_per_client     = 1024  (blocks pre-alloc per client)
-  num_buckets          = 8388608
-  queue_depth          = 1024
-  memory_size          = 65536 MB
-  worker_cpu_start     = 3  (workers on CPU 3..12)
-  local_workerring     = yes (DRAM)
-  poller_mode          = response
-[2RW] NUMA topology: CPU0_node=0  CXL_node=2  OK (CPU0 local DRAM != CXL node)
-[2RW] NUMA node 2: total=262144 MB, free=262025 MB, requested=65536 MB
-[2RW] CXL memory initialized. Layout:
-  header            @ 0x0000000000  (64B)
-  hash_table        @ 0x0000000040  (8388608 buckets × 8B = 65536 KB)
-  request_queues    @ 0x0004000040  (1 clients × 1 SNs = 1 queues)
-  worker_rings      @ 0x0004040100  (10 rings)
-  response_queues   @ 0x00042c0880  (1 × 10 = 10 queues)
-  globalidmap       @ 0x0004541000  (26815179 blocks → 3351898 B bitmap)
-  unifiedblockpool  @ 0x0004873800  (26815179 blocks × 2048B = 52373 MB)
-  spillover         @ 0x0ccddd9000  (1 clients × 13404316 KB = 13404316 KB)
-[2RW] sn_req_consumers[0]=0x7f64cc901000  NUMA node 0  (expected 0)  OK
-[2RW] sn_ring_producers[0]=0x7f64cc900000  NUMA node 0  (expected 0)  OK
-[2RW] local_workerring: allocated 10 DRAM rings (256 KB each)
-[2RW] sync_state[0].gsn=0x7f64cc8ff080  NUMA node 0  (expected 0)  OK
-[Main] Starting core threads (Sync, Poller, Workers)...
-[RespPoller] Started. Monitoring clients [0..1) × 10 workers
-[2RW] Threads started: poller_mode=response, SN[0..0]=CPU[2..2], Workers[0..9]=CPU[3..12]
-
-[Main] ===== LOAD PHASE =====
-[RespTh-0] UINTR fd=3, pinned CPU 17
-[SN0] GSN Microbenchmark (isolated, 500000 iters, rdtscp): 18.05 ticks/fetch_add(1)
-[SN0] sync_state->gsn address: 0x7f64cc8ff080
-[SN0] Started. Polling 1 RequestQueues → 10 WorkerRings (workers 0..9)
-[SN0]   Mode: dequeue_batch_pipelined (DEQUEUE_BATCH=1  READ_ACK_BATCH=1)
-[SN0]   Timing: rdtscp. A=pipelined_batch_deq/op  C=enq/op  F=flush/op
-[SN0] ops= 200000  wall=1814.1  A(deq/op)=1427.6  C(enq/op)=67.1  F(flush/op)=36.1  fw=0  empty=45289
-[SN0] ops= 400000  wall=1887.9  A(deq/op)=1464.6  C(enq/op)=58.9  F(flush/op)=36.0  fw=0  empty=95537
-[SN0] ops= 600000  wall=1888.5  A(deq/op)=1476.6  C(enq/op)=56.4  F(flush/op)=36.0  fw=0  empty=146043
-[SN0] ops= 800000  wall=1882.5  A(deq/op)=1481.4  C(enq/op)=55.2  F(flush/op)=36.0  fw=0  empty=196164
-[SN0] ops=1000000  wall=1896.1  A(deq/op)=1486.9  C(enq/op)=54.3  F(flush/op)=36.0  fw=0  empty=246808
-[SN0] ops=1200000  wall=1886.6  A(deq/op)=1488.6  C(enq/op)=53.8  F(flush/op)=36.0  fw=0  empty=297541
-[SN0] ops=1400000  wall=1896.5  A(deq/op)=1491.1  C(enq/op)=53.4  F(flush/op)=36.0  fw=0  empty=348803
-[SN0] ops=1600000  wall=1886.9  A(deq/op)=1491.9  C(enq/op)=53.1  F(flush/op)=36.0  fw=0  empty=399631
-[SN0] ops=1800000  wall=1889.7  A(deq/op)=1493.0  C(enq/op)=52.9  F(flush/op)=36.0  fw=0  empty=450164
-[SN0] ops=2000000  wall=1981.3  A(deq/op)=1496.2  C(enq/op)=52.7  F(flush/op)=36.0  fw=0  empty=520518
-[SN0] ops=2200000  wall=2574.4  A(deq/op)=1510.2  C(enq/op)=52.7  F(flush/op)=36.0  fw=0  empty=723590
-[SN0] ops=2400000  wall=2580.1  A(deq/op)=1522.2  C(enq/op)=52.8  F(flush/op)=36.0  fw=0  empty=928059
-[SN0] ops=2600000  wall=2127.7  A(deq/op)=1524.9  C(enq/op)=52.7  F(flush/op)=36.0  fw=0  empty=1031381
-[SN0] ops=2800000  wall=1898.1  A(deq/op)=1523.8  C(enq/op)=52.6  F(flush/op)=36.0  fw=0  empty=1082615
-[SN0] ops=3000000  wall=1894.7  A(deq/op)=1522.5  C(enq/op)=52.5  F(flush/op)=36.0  fw=0  empty=1133742
-[SN0] ops=3200000  wall=1894.0  A(deq/op)=1521.3  C(enq/op)=52.4  F(flush/op)=36.0  fw=0  empty=1185103
-[SN0] ops=3400000  wall=1897.5  A(deq/op)=1520.5  C(enq/op)=52.3  F(flush/op)=36.0  fw=0  empty=1236399
-[SN0] ops=3600000  wall=1896.3  A(deq/op)=1519.8  C(enq/op)=52.2  F(flush/op)=36.0  fw=0  empty=1287520
-[SN0] ops=3800000  wall=1897.4  A(deq/op)=1519.1  C(enq/op)=52.1  F(flush/op)=36.0  fw=0  empty=1338961
-[SN0] ops=4000000  wall=1890.0  A(deq/op)=1518.3  C(enq/op)=52.0  F(flush/op)=36.0  fw=0  empty=1389694
-[SN0] ops=4200000  wall=1893.8  A(deq/op)=1517.6  C(enq/op)=51.9  F(flush/op)=36.0  fw=0  empty=1440757
-[SN0] ops=4400000  wall=1891.1  A(deq/op)=1517.0  C(enq/op)=51.9  F(flush/op)=36.0  fw=0  empty=1491378
-[SN0] ops=4600000  wall=1893.9  A(deq/op)=1516.5  C(enq/op)=51.8  F(flush/op)=36.0  fw=0  empty=1541774
-[SN0] ops=4800000  wall=1894.2  A(deq/op)=1516.0  C(enq/op)=51.8  F(flush/op)=36.0  fw=0  empty=1593446
-[SN0] ops=5000000  wall=1891.5  A(deq/op)=1515.5  C(enq/op)=51.7  F(flush/op)=36.0  fw=0  empty=1644400
-[SN0] ops=5200000  wall=1898.2  A(deq/op)=1515.2  C(enq/op)=51.7  F(flush/op)=36.0  fw=0  empty=1695471
-[SN0] ops=5400000  wall=1888.6  A(deq/op)=1513.4  C(enq/op)=52.1  F(flush/op)=36.0  fw=0  empty=1744734
-[SN0] ops=5600000  wall=1891.9  A(deq/op)=1513.0  C(enq/op)=52.0  F(flush/op)=36.0  fw=0  empty=1795672
-[SN0] ops=5800000  wall=1889.7  A(deq/op)=1512.6  C(enq/op)=52.0  F(flush/op)=36.0  fw=0  empty=1846345
-[SN0] ops=6000000  wall=1894.0  A(deq/op)=1512.3  C(enq/op)=52.0  F(flush/op)=36.0  fw=0  empty=1897394
-[SN0] ops=6200000  wall=1899.0  A(deq/op)=1512.1  C(enq/op)=52.0  F(flush/op)=36.0  fw=0  empty=1949312
-[SN0] ops=6400000  wall=1892.5  A(deq/op)=1511.9  C(enq/op)=51.9  F(flush/op)=36.0  fw=0  empty=2000033
-[SN0] ops=6600000  wall=1895.4  A(deq/op)=1511.7  C(enq/op)=51.9  F(flush/op)=36.0  fw=0  empty=2051570
-[SN0] ops=6800000  wall=1894.6  A(deq/op)=1511.5  C(enq/op)=51.8  F(flush/op)=36.0  fw=0  empty=2102621
-[SN0] ops=7000000  wall=1893.2  A(deq/op)=1511.2  C(enq/op)=51.8  F(flush/op)=36.0  fw=0  empty=2154217
-[SN0] ops=7200000  wall=1890.3  A(deq/op)=1510.9  C(enq/op)=51.8  F(flush/op)=36.0  fw=0  empty=2205154
-[SN0] ops=7400000  wall=1897.2  A(deq/op)=1510.8  C(enq/op)=51.8  F(flush/op)=36.0  fw=0  empty=2257149
-[SN0] ops=7600000  wall=1897.9  A(deq/op)=1510.7  C(enq/op)=51.7  F(flush/op)=36.0  fw=0  empty=2309148
-[SN0] ops=7800000  wall=1889.6  A(deq/op)=1510.4  C(enq/op)=51.7  F(flush/op)=36.0  fw=0  empty=2360013
-[SN0] ops=8000000  wall=1889.7  A(deq/op)=1510.2  C(enq/op)=51.7  F(flush/op)=36.0  fw=0  empty=2411100
-[SN0] ops=8200000  wall=1890.1  A(deq/op)=1509.9  C(enq/op)=51.7  F(flush/op)=36.0  fw=0  empty=2461929
-[SN0] ops=8400000  wall=1891.6  A(deq/op)=1509.7  C(enq/op)=51.6  F(flush/op)=36.0  fw=0  empty=2513022
-[SN0] ops=8600000  wall=1896.8  A(deq/op)=1509.7  C(enq/op)=51.6  F(flush/op)=36.0  fw=0  empty=2564438
-[SN0] ops=8800000  wall=1893.1  A(deq/op)=1509.5  C(enq/op)=51.6  F(flush/op)=36.0  fw=0  empty=2615485
-[SN0] ops=9000000  wall=1888.7  A(deq/op)=1509.4  C(enq/op)=51.6  F(flush/op)=36.0  fw=0  empty=2665721
-[SN0] ops=9200000  wall=1893.5  A(deq/op)=1509.3  C(enq/op)=51.5  F(flush/op)=36.0  fw=0  empty=2716446
-[SN0] ops=9400000  wall=1899.1  A(deq/op)=1509.3  C(enq/op)=51.5  F(flush/op)=36.0  fw=0  empty=2768091
-[SN0] ops=9600000  wall=1895.4  A(deq/op)=1509.2  C(enq/op)=51.5  F(flush/op)=36.0  fw=0  empty=2819391
-[SN0] ops=9800000  wall=1900.7  A(deq/op)=1509.2  C(enq/op)=51.5  F(flush/op)=36.0  fw=0  empty=2871150
-[SN0] ops=10000000  wall=1892.7  A(deq/op)=1509.0  C(enq/op)=51.5  F(flush/op)=36.0  fw=0  empty=2922528
---- Client Thread Summary ---
-  Client 0    submitted=10000000    completed=10000000    failed=0
------------------------------
-
-===== Pipeline Counters =====
-
---- Request Threads (enqueue → RequestQueue) ---
-  Client       submitted     enq_waits
-  RT-0          10000000             0
-  TOTAL         10000000             0
-
---- Response Threads (dequeue ← ResponseQueue) ---
-  Client       completed        failed  drain_rounds  empty_rounds   uintr_wakes
-  RT-0          10000000             0          6405          1773          6404
-  TOTAL         10000000             0          6405          1773          6404
-  recycle_waits (total): 0
-
-=============================
-
-==============================================
-LOAD PHASE Results:
-==============================================
-  Total ops:    10000000
-  Successful:   10000000
-  Failed:       0
-  Duration:     9.172 s
-  Throughput:   1090291 ops/s
-==============================================
-
-
-=== Hash Table Bucket Chain Length Distribution ===
-  Total buckets : 8388608
-  Non-empty     : 5916272  (70.5%)
-  Total nodes   : 10000000
-  Max chain     : 9
-  Avg chain len (all buckets)       : 1.1921
-  Avg chain len (non-empty buckets) : 1.6903
-
-  Depth      # Buckets       %
-  0            2472336  29.47%
-  1            3096914  36.92%
-  2            1859106  22.16%
-  3             714596   8.52%
-  4             196252   2.34%
-  5              41478   0.49%
-  6               6910   0.08%
-  7                912   0.01%
-  8                 92   0.00%
-  9                 12   0.00%
-===================================================
-
-[Main] ===== TRANSACTION PHASE =====
-[RespTh-0] UINTR fd=4, pinned CPU 17
-[SN0] ops=10200000  wall=8569.1  A(deq/op)=1503.1  C(enq/op)=51.9  F(flush/op)=36.0  fw=0  empty=4747290
-[SN0] ops=10400000  wall=1517.0  A(deq/op)=1498.0  C(enq/op)=52.1  F(flush/op)=36.0  fw=0  empty=4761982
-[SN0] ops=10600000  wall=1563.0  A(deq/op)=1493.5  C(enq/op)=52.2  F(flush/op)=36.0  fw=0  empty=4785020
-[SN0] ops=10800000  wall=1612.1  A(deq/op)=1489.7  C(enq/op)=52.2  F(flush/op)=36.0  fw=0  empty=4817067
-[SN0] ops=11000000  wall=1609.5  A(deq/op)=1486.0  C(enq/op)=52.2  F(flush/op)=36.0  fw=0  empty=4848676
-[SN0] ops=11200000  wall=1629.2  A(deq/op)=1482.6  C(enq/op)=52.2  F(flush/op)=36.0  fw=0  empty=4882695
-[SN0] ops=11400000  wall=1612.5  A(deq/op)=1479.2  C(enq/op)=52.2  F(flush/op)=36.0  fw=0  empty=4914974
-[SN0] ops=11600000  wall=1612.6  A(deq/op)=1475.9  C(enq/op)=52.2  F(flush/op)=36.0  fw=0  empty=4947248
-[SN0] ops=11800000  wall=1612.8  A(deq/op)=1472.7  C(enq/op)=52.1  F(flush/op)=36.0  fw=0  empty=4979369
-[SN0] ops=12000000  wall=1611.5  A(deq/op)=1469.6  C(enq/op)=52.1  F(flush/op)=36.0  fw=0  empty=5011326
-[SN0] ops=12200000  wall=1655.5  A(deq/op)=1467.1  C(enq/op)=52.1  F(flush/op)=36.0  fw=0  empty=5046310
-[SN0] ops=12400000  wall=1646.7  A(deq/op)=1464.7  C(enq/op)=52.1  F(flush/op)=36.0  fw=0  empty=5079498
-[SN0] ops=12600000  wall=1637.7  A(deq/op)=1462.2  C(enq/op)=52.1  F(flush/op)=36.0  fw=0  empty=5111730
-[SN0] ops=12800000  wall=1635.2  A(deq/op)=1459.8  C(enq/op)=52.1  F(flush/op)=36.0  fw=0  empty=5143493
-[SN0] ops=13000000  wall=1604.2  A(deq/op)=1455.1  C(enq/op)=54.3  F(flush/op)=36.0  fw=303314  empty=5170647
-[SN0] ops=13200000  wall=1393.4  A(deq/op)=1434.3  C(enq/op)=70.8  F(flush/op)=36.0  fw=2607280  empty=5170816
-[SN0] ops=13400000  wall=1395.0  A(deq/op)=1413.9  C(enq/op)=87.0  F(flush/op)=36.0  fw=4939599  empty=5170816
-[SN0] ops=13600000  wall=1394.4  A(deq/op)=1395.0  C(enq/op)=101.8  F(flush/op)=36.0  fw=7127036  empty=5172271
-[SN0] ops=13800000  wall=1376.0  A(deq/op)=1376.7  C(enq/op)=115.8  F(flush/op)=36.0  fw=9235030  empty=5173776
-[SN0] ops=14000000  wall=1418.2  A(deq/op)=1359.3  C(enq/op)=129.7  F(flush/op)=36.0  fw=11421151  empty=5175999
-[SN0] ops=14200000  wall=1369.6  A(deq/op)=1341.2  C(enq/op)=143.7  F(flush/op)=36.0  fw=13652803  empty=5176068
-[SN0] ops=14400000  wall=1664.4  A(deq/op)=1324.4  C(enq/op)=160.6  F(flush/op)=36.0  fw=16767822  empty=5177702
-[SN0] ops=14600000  wall=1423.2  A(deq/op)=1309.0  C(enq/op)=172.7  F(flush/op)=36.0  fw=18867686  empty=5181130
-[SN0] ops=14800000  wall=1415.7  A(deq/op)=1294.1  C(enq/op)=184.2  F(flush/op)=36.0  fw=20906949  empty=5184833
-[SN0] ops=15000000  wall=1411.1  A(deq/op)=1279.7  C(enq/op)=195.3  F(flush/op)=36.0  fw=22929286  empty=5188322
-[SN0] ops=15200000  wall=1398.3  A(deq/op)=1263.8  C(enq/op)=208.0  F(flush/op)=36.0  fw=25271674  empty=5188322
-[SN0] ops=15400000  wall=1385.3  A(deq/op)=1249.0  C(enq/op)=219.5  F(flush/op)=36.0  fw=27443895  empty=5189619
-[SN0] ops=15600000  wall=1417.1  A(deq/op)=1235.6  C(enq/op)=229.9  F(flush/op)=36.0  fw=29511236  empty=5193048
-[SN0] ops=15800000  wall=1368.9  A(deq/op)=1220.8  C(enq/op)=241.3  F(flush/op)=36.0  fw=31745791  empty=5193077
-[SN0] ops=16000000  wall=1400.8  A(deq/op)=1206.4  C(enq/op)=252.8  F(flush/op)=36.0  fw=34096091  empty=5193077
-[SN0] ops=16200000  wall=1373.0  A(deq/op)=1192.4  C(enq/op)=263.7  F(flush/op)=36.0  fw=36345316  empty=5193110
-[SN0] ops=16400000  wall=1394.4  A(deq/op)=1178.7  C(enq/op)=274.6  F(flush/op)=36.0  fw=38673701  empty=5193110
-[SN0] ops=16600000  wall=1365.6  A(deq/op)=1165.8  C(enq/op)=284.4  F(flush/op)=36.0  fw=40817408  empty=5193903
-[SN0] ops=16800000  wall=1401.0  A(deq/op)=1153.2  C(enq/op)=294.4  F(flush/op)=36.0  fw=43076825  empty=5194789
-[SN0] ops=17000000  wall=1403.5  A(deq/op)=1141.6  C(enq/op)=303.4  F(flush/op)=36.0  fw=45185815  empty=5197177
-[SN0] ops=17200000  wall=1398.1  A(deq/op)=1129.5  C(enq/op)=312.9  F(flush/op)=36.0  fw=47452372  empty=5197899
-[SN0] ops=17400000  wall=1380.7  A(deq/op)=1117.4  C(enq/op)=322.4  F(flush/op)=36.0  fw=49717554  empty=5198017
-[SN0] ops=17600000  wall=1373.7  A(deq/op)=1105.5  C(enq/op)=331.6  F(flush/op)=36.0  fw=51973379  empty=5198017
-[SN0] ops=17800000  wall=1382.3  A(deq/op)=1093.9  C(enq/op)=340.8  F(flush/op)=36.0  fw=54259587  empty=5198017
-[SN0] ops=18000000  wall=1401.3  A(deq/op)=1082.8  C(enq/op)=349.5  F(flush/op)=36.0  fw=56542419  empty=5198710
-[SN0] ops=18200000  wall=1364.5  A(deq/op)=1072.2  C(enq/op)=357.5  F(flush/op)=36.0  fw=58652567  empty=5199788
-[SN0] ops=18400000  wall=1401.9  A(deq/op)=1061.6  C(enq/op)=366.0  F(flush/op)=36.0  fw=60938275  empty=5200448
-[SN0] ops=18600000  wall=2001.1  A(deq/op)=1050.9  C(enq/op)=381.0  F(flush/op)=36.0  fw=65391620  empty=5200448
-[SN0] ops=18800000  wall=1396.9  A(deq/op)=1041.4  C(enq/op)=388.3  F(flush/op)=36.0  fw=67498459  empty=5202878
-[SN0] ops=19000000  wall=1384.3  A(deq/op)=1031.2  C(enq/op)=396.2  F(flush/op)=36.0  fw=69791540  empty=5202878
-[SN0] ops=19200000  wall=1381.5  A(deq/op)=1021.2  C(enq/op)=404.0  F(flush/op)=36.0  fw=72075500  empty=5202878
-[SN0] ops=19400000  wall=1383.3  A(deq/op)=1011.4  C(enq/op)=411.7  F(flush/op)=36.0  fw=74364897  empty=5202878
-[SN0] ops=19600000  wall=1385.6  A(deq/op)=1001.8  C(enq/op)=419.2  F(flush/op)=36.0  fw=76662815  empty=5202878
-[SN0] ops=19800000  wall=1377.8  A(deq/op)=992.4  C(enq/op)=426.4  F(flush/op)=36.0  fw=78933677  empty=5202878
-[SN0] ops=20000000  wall=1371.1  A(deq/op)=983.1  C(enq/op)=433.5  F(flush/op)=36.0  fw=81180208  empty=5202878
---- Client Thread Summary ---
-  Client 0    submitted=10000000    completed=10000000    failed=0  latency_samples=10000000
------------------------------
-
-===== Pipeline Counters =====
-
---- Request Threads (enqueue → RequestQueue) ---
-  Client       submitted     enq_waits
-  RT-0          10000000        260819
-  TOTAL         10000000        260819
-
---- Response Threads (dequeue ← ResponseQueue) ---
-  Client       completed        failed  drain_rounds  empty_rounds   uintr_wakes
-  RT-0          10000000             0             7             0             6
-  TOTAL         10000000             0             7             0             6
-  recycle_waits (total): 161243136
-
-=============================
-
-==============================================
-TRANSACTION PHASE Results:
-==============================================
-  Total ops:    10000000
-  Successful:   10000000
-  Failed:       0
-  Duration:     7.012 s
-  Throughput:   1426146 ops/s
-  Decomposed Latency (10000000 samples, TSC ~2100 MHz):
-  Stage                          avg(us)       p50       p99       max
-  t0→t1 pool→RequestQueue       0.02      0.01      0.01  55407.23
-  t1→t2 Sync dispatch          5065.32   1575.94  28083.61  85331.61
-  t2→t3 Worker execution          0.29      0.21      0.82     16.39
-  t0→t3 end-to-end             5065.64   1576.18  28084.30  85332.13
-==============================================
-
-[SN0] ===== Final Statistics =====
-[SN0]   total_routed  : 20000000
-[SN0]   empty_polls   : 12404740
-[SN0]   ring_fullwaits: 81180208
-[SN0]   flush calls   : 20000000  (batch=1, raw/flush=36.0 ticks)
-[SN0]   wall ticks/op : 2050.7
-[SN0]
-[SN0]   Sub-operation breakdown (rdtscp-serialized, avg ticks/op):
-[SN0]     A  pipelined batch deq/op  :  983.1  (DEQUEUE_BATCH=1)
-[SN0]     C  ring enqueue/op         :  433.5  (DRAM release-store)
-[SN0]     F  flush amortised/op      :   36.0  (READ_ACK_BATCH=1)
-[SN0]     loop+rdtscp overhead/op    :  598.0
-[SN0]   Per RequestQueue:
-[SN0]     ReqQ[0]: 20000000
-[SN0]   Per WorkerRing (global IDs):
-[SN0]     Worker[0]: enqueued=2022620  fullwaits=0
-[SN0]     Worker[1]: enqueued=2029244  fullwaits=0
-[SN0]     Worker[2]: enqueued=1996213  fullwaits=0
-[SN0]     Worker[3]: enqueued=1999883  fullwaits=0
-[SN0]     Worker[4]: enqueued=1979039  fullwaits=0
-[SN0]     Worker[5]: enqueued=1976848  fullwaits=0
-[SN0]     Worker[6]: enqueued=2054058  fullwaits=1008220
-[SN0]     Worker[7]: enqueued=2053739  fullwaits=80171988
-[SN0]     Worker[8]: enqueued=1943192  fullwaits=0
-[SN0]     Worker[9]: enqueued=1945164  fullwaits=0
-[RespPoller] Stopped. scan_rounds=59721688  uintrs_sent=59
-[2RW] SN0 final GSN: 20000000
-
-===== Worker Summary (0..9) =====
---- Workers (dequeue ← WorkerRing, enqueue → ResponseQueue) ---
-  Worker        ops_done   empty_polls  resp_fullwaits   uintr_wakes
-  W-0            2022620     336266484             0             0
-  W-1            2029244      77172774             0             0
-  W-2            1996213     100828173             0             0
-  W-3            1999883     102058246             0             0
-  W-4            1979039     121697329             0             0
-  W-5            1976848     120696001             0             0
-  W-6            2054058      54960045      10444360             0
-  W-7            2053739      93437191      12406293             0
-  W-8            1943192     154453298             0             0
-  W-9            1945164     262779789             0             0
-
-    GET         total=  511812  hit=  511812  miss=       0  chain_avg= 1.90
-               depth:  [ 1]=155954  [ 2]=260836  [ 3]=85355  [ 4]=7400  [ 5]=2125  [ 6]=141  [ 8]=1
-    PUT/UPDATE  total= 1510808  hit=  510621  miss= 1000187  chain_avg= 1.02
-               depth:  [ 0]=591456  [ 1]=438630  [ 2]=356144  [ 3]=109115  [ 4]=12142  [ 5]=3043  [ 6]=265  [ 7]=11  [ 8]=2
-    GET         total=  514276  hit=  514276  miss=       0  chain_avg= 1.91
-               depth:  [ 1]=155625  [ 2]=262977  [ 3]=85985  [ 4]=7388  [ 5]=2137  [ 6]=164
-    PUT/UPDATE  total= 1514968  hit=  514781  miss= 1000187  chain_avg= 1.03
-               depth:  [ 0]=591456  [ 1]=438108  [ 2]=359304  [ 3]=110683  [ 4]=12053  [ 5]=3074  [ 6]=278  [ 7]=10  [ 8]=2
-    GET         total=  497962  hit=  497962  miss=       0  chain_avg= 1.64
-               depth:  [ 1]=218934  [ 2]=247725  [ 3]=26804  [ 4]=2272  [ 5]=2176  [ 6]=39  [ 7]=12
-    PUT/UPDATE  total= 1498251  hit=  498098  miss= 1000153  chain_avg= 0.93
-               depth:  [ 0]=592552  [ 1]=499739  [ 2]=343862  [ 3]=51592  [ 4]=7343  [ 5]=3004  [ 6]=135  [ 7]=24
-    GET         total=  499744  hit=  499744  miss=       0  chain_avg= 1.64
-               depth:  [ 1]=219142  [ 2]=249073  [ 3]=27025  [ 4]=2289  [ 5]=2155  [ 6]=49  [ 7]=11
-    PUT/UPDATE  total= 1500139  hit=  499986  miss= 1000153  chain_avg= 0.93
-               depth:  [ 0]=592552  [ 1]=500343  [ 2]=345614  [ 3]=51239  [ 4]=7257  [ 5]=2958  [ 6]=154  [ 7]=22
-    GET         total=  488936  hit=  488936  miss=       0  chain_avg= 1.85
-               depth:  [ 1]=148833  [ 2]=276694  [ 3]=54499  [ 4]=6681  [ 5]=2210  [ 6]=19
-    PUT/UPDATE  total= 1490103  hit=  490071  miss= 1000032  chain_avg= 0.99
-               depth:  [ 0]=591313  [ 1]=431102  [ 2]=373286  [ 3]=79549  [ 4]=11694  [ 5]=3036  [ 6]=111  [ 7]=11  [ 8]=1
-    GET         total=  488497  hit=  488497  miss=       0  chain_avg= 1.85
-               depth:  [ 1]=149621  [ 2]=275152  [ 3]=54848  [ 4]=6680  [ 5]=2179  [ 6]=17
-    PUT/UPDATE  total= 1488351  hit=  488320  miss= 1000031  chain_avg= 0.99
-               depth:  [ 0]=591312  [ 1]=431020  [ 2]=371134  [ 3]=80114  [ 4]=11679  [ 5]=2964  [ 6]=115  [ 7]=12  [ 8]=1
-    GET         total=  527738  hit=  527738  miss=       0  chain_avg= 1.96
-               depth:  [ 1]=173448  [ 2]=205839  [ 3]=143109  [ 4]=4820  [ 5]=500  [ 6]=22
-    PUT/UPDATE  total= 1526320  hit=  526862  miss=  999458  chain_avg= 1.05
-               depth:  [ 0]=591447  [ 1]=455171  [ 2]=300996  [ 3]=167354  [ 4]=9970  [ 5]=1253  [ 6]=119  [ 7]=9  [ 8]=1
-    GET         total=  527711  hit=  527711  miss=       0  chain_avg= 1.97
-               depth:  [ 1]=172701  [ 2]=205570  [ 3]=143930  [ 4]=4971  [ 5]=513  [ 6]=26
-    PUT/UPDATE  total= 1526028  hit=  526570  miss=  999458  chain_avg= 1.05
-               depth:  [ 0]=591447  [ 1]=453862  [ 2]=300691  [ 3]=168875  [ 4]=9827  [ 5]=1197  [ 6]=119  [ 7]=9  [ 8]=1
-    GET         total=  470510  hit=  470510  miss=       0  chain_avg= 1.93
-               depth:  [ 1]=118001  [ 2]=288901  [ 3]=42903  [ 4]=18217  [ 5]=2456  [ 6]=31  [ 7]=1
-    PUT/UPDATE  total= 1472682  hit=  472512  miss= 1000170  chain_avg= 1.01
-               depth:  [ 0]=591368  [ 1]=400416  [ 2]=387067  [ 3]=67164  [ 4]=23349  [ 5]=3179  [ 6]=126  [ 7]=11  [ 8]=2
-    GET         total=  472769  hit=  472769  miss=       0  chain_avg= 1.93
-               depth:  [ 1]=118654  [ 2]=290452  [ 3]=42609  [ 4]=18602  [ 5]=2418  [ 6]=34
-    PUT/UPDATE  total= 1472395  hit=  472224  miss= 1000171  chain_avg= 1.01
-               depth:  [ 0]=591369  [ 1]=401264  [ 2]=385984  [ 3]=67083  [ 4]=23320  [ 5]=3244  [ 6]=119  [ 7]=10  [ 8]=2
---- Response Poller (scan ResponseQueues, send UINTR) ---
-  scan_rounds:  59721688
-  uintrs_sent:  59
-  rounds/uintr: 1012232.0
-
-==================================
+warning: 56     ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S: No such file or directory
+(gdb) info threads
+  Id   Target Id                                           Frame 
+* 1    Thread 0x7fe48ca2d780 (LWP 88956) "sharedkv_2rw_be" __syscall_cancel_arch ()
+    at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+  2    Thread 0x7fe487a206c0 (LWP 89007) "sharedkv_2rw_be" CXLSpscProducer<TwoRW::KVRequest, 4096ul>::enqueue (this=0x561110588860, 
+    item=...)
+    at /root/YCSB-YW/sharedkv/native/benchmark/../include/cxl_spsc_queue.h:201
+--Type <RET> for more, q to quit, c to continue without paging--
+  3    Thread 0x7fe4882216c0 (LWP 89006) "sharedkv_2rw_be" CXLSpscConsumer<TwoRW::KVResponse, 4096ul>::dequeue_batch_pipelined (
+    this=0x56110fff1d88, items=0x7fe488220b40, max_count=8)
+    at /root/YCSB-YW/sharedkv/native/benchmark/../include/cxl_spsc_queue.h:435
+  4    Thread 0x7fe488a226c0 (LWP 89005) "sharedkv_2rw_be" _mm_pause () at /usr/lib/gcc/x86_64-linux-gnu/14/include/xmmintrin.h:1338
+  5    Thread 0x7fe4892236c0 (LWP 89004) "sharedkv_2rw_be" 0x0000560e4a728a75 in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::d--Type <RET> for more, q to quit, c to continue without paging--
+equeue (this=0x56110ff9a4d0, item=...)
+    at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:124
+  6    Thread 0x7fe489a246c0 (LWP 89003) "sharedkv_2rw_be" 0x0000560e4a728a75 in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x56110ff9a4b8, item=...)
+    at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:124
+  7    Thread 0x7fe48a2256c0 (LWP 89002) "sharedkv_2rw_be" _mm_paus--Type <RET> for more, q to quit, c to continue without paging--
+e () at /usr/lib/gcc/x86_64-linux-gnu/14/include/xmmintrin.h:1338
+  8    Thread 0x7fe48aa266c0 (LWP 89001) "sharedkv_2rw_be" 0x0000560e4a728a75 in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x56110ff9a488, item=...)
+    at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:124
+  9    Thread 0x7fe48b2276c0 (LWP 89000) "sharedkv_2rw_be" 0x0000560e4a728a75 in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x56110ff9a470, item=...)
+--Type <RET> for more, q to quit, c to continue without paging--
+    at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:124
+  10   Thread 0x7fe48ba286c0 (LWP 88999) "sharedkv_2rw_be" 0x0000560e4a728a75 in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x56110ff9a458, item=...)
+    at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:124
+  11   Thread 0x7fe48c2296c0 (LWP 88998) "sharedkv_2rw_be" TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (
+--Type <RET> for more, q to quit, c to continue without paging--
+    this=0x56110ff9a440, item=...)
+    at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:125
+  12   Thread 0x7fe48ca2a6c0 (LWP 88997) "sharedkv_2rw_be" CXLSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue_batch_pipelined (
+    this=0x7fe48cfba000, items=0x7fe478000c80, max_count=64)
+    at /root/YCSB-YW/sharedkv/native/benchmark/../include/cxl_spsc_queue.h:435
