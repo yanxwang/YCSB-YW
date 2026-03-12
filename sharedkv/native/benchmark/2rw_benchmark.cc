@@ -129,7 +129,8 @@ static void* request_thread_fn(void* arg) {
         // Step 3: Submit (spin if RequestQueue full)
         const uint8_t  op_type   = static_cast<uint8_t>(ycsb_to_2rw_op(op.op_type));
         const uint32_t worker_id = two_rw_route(op.key.data(), klen, m);
-        while (!two_rw_submit(ctx, cid, block_id, worker_id, op_type)) {
+        while (!two_rw_submit(ctx, cid, block_id, worker_id, op_type,
+                               block->key_hash, block->key_len)) {
             two_rw_drain_freeblocks(ctx, cid);  // prevent deadlock with RespThread
             req_enq_waits++;
             _mm_pause();

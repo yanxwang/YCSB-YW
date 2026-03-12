@@ -116,7 +116,9 @@ static_assert(alignof(UnifiedBlock) == 64);
 //   [21..23] _pad0
 //   [24..31] t1
 //   [32..39] t2
-//   [40..63] padding
+//   [40..43] key_hash   (RT-computed; worker retries CLFLUSHOPT until block matches)
+//   [44..45] key_len    (RT-computed; paired with key_hash for confirmation)
+//   [46..63] padding
 // ============================================================================
 
 struct alignas(64) KVRequest {
@@ -128,7 +130,9 @@ struct alignas(64) KVRequest {
     uint8_t  _pad0[3];
     uint64_t t1;          // rdtscp: RT enqueues to RequestQueue
     uint64_t t2;          // rdtscp: Synchronizer enqueues to WorkerRing
-    char     padding[24];
+    uint32_t key_hash;    // FNV-1a of key (RT fills; worker uses for bkt routing + CXL visibility check)
+    uint16_t key_len;     // key length in bytes (RT fills; paired with key_hash for confirmation)
+    char     padding[18];
 };
 static_assert(sizeof(KVRequest) == 64, "KVRequest must be 64B");
 

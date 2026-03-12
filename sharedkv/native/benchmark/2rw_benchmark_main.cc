@@ -293,6 +293,8 @@ int main(int argc, char** argv) {
             cfg.counters_enabled = true;
         } else if (strcmp(argv[i], "--verbose") == 0) {
             cfg.verbose = true;
+        } else if (strcmp(argv[i], "--worker-check") == 0) {
+            cfg.worker_check = true;
         // ---- Multi-machine flags ----
         } else if (strcmp(argv[i], "--node-id") == 0) {
             cfg.node_id = next_u32("--node-id");

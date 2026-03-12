@@ -110,8 +110,19 @@ static KVResponse kv_put(const KVRequest& req, void* base,
     cxl_clflushopt(static_cast<char*>(static_cast<void*>(block_new)) + 128);  // line 2
     _mm_lfence();  // wait for all clflushopt + prior loads to complete
 
-    const uint32_t key_hash = block_new->key_hash;
-    const uint16_t key_len  = block_new->key_len;
+    // CXL cross-machine visibility: spin until block reflects RT's write.
+    // req.key_hash/key_len are delivered reliably via the CXL queue (CLFLUSHOPT-read
+    // by the consumer).  If block still shows stale data, the CLWB from the remote RT
+    // has not yet propagated to CXL DRAM — retry until it does.
+    while (block_new->key_hash != req.key_hash || block_new->key_len != req.key_len) {
+        _mm_pause();
+        cxl_clflushopt(block_new);
+        _mm_lfence();
+    }
+
+    // Use req.key_hash (authoritative) for bucket routing; block data is now confirmed visible.
+    const uint32_t key_hash = req.key_hash;
+    const uint16_t key_len  = req.key_len;
     const char*    key      = block_new->data;
 
     // Check 2: block data integrity — recompute worker route from key bytes
@@ -184,8 +195,15 @@ static KVResponse kv_get(const KVRequest& req, void* base,
     cxl_clflushopt(static_cast<char*>(static_cast<void*>(req_block)) + 128);
     _mm_lfence();
 
-    const uint32_t key_hash = req_block->key_hash;
-    const uint16_t key_len  = req_block->key_len;
+    // CXL cross-machine visibility: spin until block reflects RT's write.
+    while (req_block->key_hash != req.key_hash || req_block->key_len != req.key_len) {
+        _mm_pause();
+        cxl_clflushopt(req_block);
+        _mm_lfence();
+    }
+
+    const uint32_t key_hash = req.key_hash;
+    const uint16_t key_len  = req.key_len;
     const char*    key      = req_block->data;
 
     // Check 2: block data integrity
@@ -239,8 +257,15 @@ static KVResponse kv_del(const KVRequest& req, void* base,
     cxl_clflushopt(static_cast<char*>(static_cast<void*>(cmd_block)) + 128);
     _mm_lfence();
 
-    const uint32_t key_hash = cmd_block->key_hash;
-    const uint16_t key_len  = cmd_block->key_len;
+    // CXL cross-machine visibility: spin until block reflects RT's write.
+    while (cmd_block->key_hash != req.key_hash || cmd_block->key_len != req.key_len) {
+        _mm_pause();
+        cxl_clflushopt(cmd_block);
+        _mm_lfence();
+    }
+
+    const uint32_t key_hash = req.key_hash;
+    const uint16_t key_len  = req.key_len;
     const char*    key      = cmd_block->data;
 
     // Check 2: block data integrity

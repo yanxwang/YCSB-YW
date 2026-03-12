@@ -739,7 +739,8 @@ inline UnifiedBlock* two_rw_get_unified_block(TwoRWContext* ctx, uint32_t block_
 // Routes to req_producers[client_id * s + sn_id].
 // SN determined via worker_to_sn[] lookup (supports both even and flexible allocation).
 inline bool two_rw_submit(TwoRWContext* ctx, uint32_t client_id,
-                           uint32_t block_id, uint32_t worker_id, uint8_t op_type) {
+                           uint32_t block_id, uint32_t worker_id, uint8_t op_type,
+                           uint32_t key_hash, uint16_t key_len) {
     const uint32_t s     = ctx->config.num_synchronizers;
     const uint32_t sn_id = ctx->worker_to_sn[worker_id];
     KVRequest req{};
@@ -747,6 +748,8 @@ inline bool two_rw_submit(TwoRWContext* ctx, uint32_t client_id,
     req.block_id  = block_id;
     req.client_id = client_id;
     req.op_type   = op_type;
+    req.key_hash  = key_hash;
+    req.key_len   = key_len;
     req.t1        = __rdtsc();
     return ctx->req_producers[client_id * s + sn_id].enqueue(req);
 }
