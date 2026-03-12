@@ -132,7 +132,12 @@ static void* request_thread_fn(void* arg) {
         cxl_nt_memcpy(block->data, op.key.data(), klen);
         if (vlen > 0)
             cxl_nt_memcpy(block->data + klen, op.value.data(), vlen);
-        _mm_sfence();  // flush WC buffer to CXL DRAM before block_id flows to SN/Worker
+        _mm_sfence();  // flush WC buffer → LLC
+        // NT stores on WB-mapped CXL land in the local LLC, not in CXL DRAM.
+        // CLWB evicts each modified line from LLC → CXL DRAM so remote workers
+        // can see the data via CLFLUSHOPT+LFENCE.
+        cxl_flush_range(block, 64 + klen + vlen);
+        _mm_sfence();  // ensure CLWB completes before block_id flows to SN/Worker
 
         // Step 3: Submit (spin if RequestQueue full)
         // Readback: verify NT store reached CXL DRAM before handing block_id to worker.
