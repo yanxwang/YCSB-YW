@@ -9,7 +9,7 @@
 # The CXL physical base address can be found via:
 #   cat /sys/bus/dax/devices/dax0.0/resource
 # ============================================================================
-
+./build.sh
 set -euo pipefail
 
 ROLE="${1:-}"
@@ -27,7 +27,7 @@ fi
 WORKLOAD="workloada"
 WORKLOAD_DIR="/mnt/ywang/workloads"
 NUM_CLIENTS=2                      # total across cluster
-NUM_WORKERS=16                     # total across cluster
+NUM_WORKERS=4                      # total across cluster
 NUM_SYNCHRONIZERS=2                # total across cluster
 DEQUEUE_BATCH=64
 READ_ACK_BATCH=64
@@ -41,7 +41,7 @@ CXL_NUMA=1
 # ============================================================================
 #                           Master (node 0)     Slave (node 1)
 #   Synchronizers:          SN0                  SN1
-#   Workers:                W0..W7 (8)           W8..W15 (8)
+#   Workers:                W0..W3 (4)           W4..W7 (4)
 #   Clients:                C0 (1)               C1 (1)
 
 if [[ "$ROLE" == "master" ]]; then
@@ -49,15 +49,15 @@ if [[ "$ROLE" == "master" ]]; then
     GLOBAL_SN_START=0
     GLOBAL_SN_COUNT=1
     GLOBAL_WORKER_START=0
-    GLOBAL_WORKER_COUNT=8
+    GLOBAL_WORKER_COUNT=2
     GLOBAL_CLIENT_START=0
     GLOBAL_CLIENT_COUNT=1
 else
     NODE_ID=1
     GLOBAL_SN_START=1
     GLOBAL_SN_COUNT=1
-    GLOBAL_WORKER_START=8
-    GLOBAL_WORKER_COUNT=8
+    GLOBAL_WORKER_START=2
+    GLOBAL_WORKER_COUNT=2
     GLOBAL_CLIENT_START=1
     GLOBAL_CLIENT_COUNT=1
 fi

@@ -1,78 +1,126 @@
-===== PIPELINE DIAGNOSTIC (SIGUSR1) =====
-RequestQueues [n=2 × s=2]:
-  ReqQ[c0,sn0]: fill=41 (w=2529944 r=2529903)
-  ReqQ[c0,sn1]: fill=4096 (w=2529748 r=2525652)
-  ReqQ[c1,sn0]: fill=55 (w=2430343 r=2430288)
-  ReqQ[c1,sn1]: fill=51 (w=4042 r=3991)
-WorkerRings [m=16]:
-  WR[0]: fill=0 (w=620134 r=620134)
-  WR[1]: fill=0 (w=620242 r=620242)
-  WR[2]: fill=0 (w=619921 r=619921)
-  WR[3]: fill=0 (w=620066 r=620066)
-  WR[4]: fill=0 (w=619867 r=619867)
-  WR[5]: fill=0 (w=619971 r=619971)
-  WR[6]: fill=0 (w=620233 r=620233)
-  WR[7]: fill=0 (w=619853 r=619853)
-  WR[8]: fill=0 (w=0 r=0)
-  WR[9]: fill=0 (w=0 r=0)
-  WR[10]: fill=0 (w=0 r=0)
-  WR[11]: fill=0 (w=0 r=0)
-  WR[12]: fill=0 (w=0 r=0)
-  WR[13]: fill=0 (w=0 r=0)
-  WR[14]: fill=0 (w=0 r=0)
-  WR[15]: fill=0 (w=0 r=0)
-ResponseQueues [n=2 × m=16]:
-  RespQ[c1,w0]: fill=1657 (w=303746 r=302089)
-  RespQ[c1,w1]: fill=1995 (w=303879 r=301884)
-  RespQ[c1,w2]: fill=1619 (w=303793 r=302174)
-  RespQ[c1,w3]: fill=1576 (w=303735 r=302159)
-  RespQ[c1,w4]: fill=1710 (w=303752 r=302042)
-  RespQ[c1,w5]: fill=1656 (w=303855 r=302199)
-  RespQ[c1,w9]: fill=18446744073709523986 (w=275371 r=303001) FULL
-  RespQ[c1,w10]: fill=1 (w=281710 r=281709)
-  RespQ[c1,w11]: fill=18446744073709248639 (w=0 r=302977) FULL
-  RespQ[c1,w13]: fill=272047 (w=272047 r=0) FULL
-FreeBlockQueues [n=2]:
-  FBQ[c0]: fill=0 (w=48127 r=48127)
-  FBQ[c1]: fill=0 (w=0 r=0)
-LocalBlockCaches [n=2]:
-  Cache[c0]: top=146
-  Cache[c1]: top=1024
-Bitmap: free=16977057 / total=26812002
-===== END DIAGNOSTIC =====
+g3
+Thread 11 (Thread 0x7f30c78306c0 (LWP 44755) "sharedkv_2rw_be"):
+#0  TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x55a07875d380, item=...) at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:125
+#1  0x0000559daffec7d6 in TwoRW::two_rw_worker_run (s=0x55a1bceecb10) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:353
+#2  0x0000559daffe4211 in operator() (__closure=0x55a1bcaec2d8) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:745
+#3  0x0000559daffe6d45 in std::__invoke_impl<void, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
+(More stack frames follow...)
 
+Thread 10 (Thread 0x7f30c702f6c0 (LWP 44756) "sharedkv_2rw_be"):
+--Type <RET> for more, q to quit, c to continue without paging--
+#0  _mm_pause () at /usr/lib/gcc/x86_64-linux-gnu/14/include/xmmintrin.h:1338
+#1  TwoRW::two_rw_worker_run (s=0x55a1bceecba0) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:426
+#2  0x0000559daffe4211 in operator() (__closure=0x559deff59a38) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:745
+#3  0x0000559daffe6d45 in std::__invoke_impl<void, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
+(More stack frames follow...)
 
+Thread 9 (Thread 0x7f30c682e6c0 (LWP 44757) "sharedkv_2rw_be"):
+#0  TwoRW::kv_put (req=..., base=0x7f1ff5835000, buckets=0x7f1ff0800040, num_buckets=8388608, wid=2, num_workers=16, stats=0x0, do_check=false) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:117
+--Type <RET> for more, q to quit, c to continue without paging--
+#1  0x0000559daffec93d in TwoRW::two_rw_worker_run (s=0x55a1bceecc30) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:373
+#2  0x0000559daffe4211 in operator() (__closure=0x559deff54198) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:745
+#3  0x0000559daffe6d45 in std::__invoke_impl<void, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
+(More stack frames follow...)
 
-===== PIPELINE DIAGNOSTIC (SIGUSR1) =====
-RequestQueues [n=2 × s=2]:
-  ReqQ[c0,sn0]: fill=41 (w=2529944 r=2529903)
-  ReqQ[c0,sn1]: fill=59 (w=2525711 r=2525652)
-  ReqQ[c1,sn0]: fill=55 (w=2430343 r=2430288)
-  ReqQ[c1,sn1]: fill=4096 (w=2430237 r=2426141)
-WorkerRings [m=16]:
-  WR[0]: fill=0 (w=0 r=0)
-  WR[1]: fill=0 (w=0 r=0)
-  WR[2]: fill=0 (w=0 r=0)
-  WR[3]: fill=0 (w=0 r=0)
-  WR[4]: fill=0 (w=0 r=0)
-  WR[5]: fill=0 (w=0 r=0)
-  WR[6]: fill=0 (w=0 r=0)
-  WR[7]: fill=0 (w=0 r=0)
-  WR[8]: fill=4096 (w=619362 r=615266) FULL
-  WR[9]: fill=0 (w=619078 r=619078)
-  WR[10]: fill=0 (w=618896 r=618896)
-  WR[11]: fill=0 (w=619250 r=619250)
-  WR[12]: fill=0 (w=618626 r=618626)
-  WR[13]: fill=0 (w=618867 r=618867)
-  WR[14]: fill=0 (w=619128 r=619128)
-  WR[15]: fill=4027 (w=618676 r=614649)
-ResponseQueues [n=2 × m=16]:
-  RespQ[c0,w5]: fill=316116 (w=316116 r=0) FULL
-FreeBlockQueues [n=2]:
-  FBQ[c0]: fill=0 (w=0 r=0)
-  FBQ[c1]: fill=0 (w=4958 r=4958)
-LocalBlockCaches [n=2]:
-  Cache[c0]: top=1024
-  Cache[c1]: top=185
-Bitmap: free=16945505 / total=26812002
-===== END DIAGNOSTIC =====
+Thread 8 (Thread 0x7f30c602d6c0 (LWP 44758) "sharedkv_2rw_be"):
+#0  TwoRW::kv_put (req=..., base=0x7f1ff5835000, buckets=0x7f1ff0800040, num_buckets=8388608, wid=3, num_workers=16, stats=0x0, do_check=false) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:117
+#1  0x0000559daffec93d in TwoRW::two_rw_worker_run (s=0x55a1bceeccc0) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:373
+--Type <RET> for more, q to quit, c to continue without paging--
+#2  0x0000559daffe4211 in operator() (__closure=0x55a079f3d548) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:745
+#3  0x0000559daffe6d45 in std::__invoke_impl<void, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
+(More stack frames follow...)
+
+Thread 7 (Thread 0x7f30c582c6c0 (LWP 44759) "sharedkv_2rw_be"):
+#0  TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x55a07875d3e0, item=...) at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:128
+#1  0x0000559daffec7d6 in TwoRW::two_rw_worker_run (s=0x55a1bceecd50) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:353
+#2  0x0000559daffe4211 in operator() (__closure=0x55a079f3d6d8) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:745
+--Type <RET> for more, q to quit, c to continue without paging--
+#3  0x0000559daffe6d45 in std::__invoke_impl<void, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
+(More stack frames follow...)
+
+Thread 6 (Thread 0x7f30c502b6c0 (LWP 44760) "sharedkv_2rw_be"):
+#0  0x0000559daffed049 in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x55a07875d3f8, item=...) at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:124
+#1  0x0000559daffec7d6 in TwoRW::two_rw_worker_run (s=0x55a1bceecde0) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:353
+#2  0x0000559daffe4211 in operator() (__closure=0x559deffa91d8) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:745
+#3  0x0000559daffe6d45 in std::__invoke_impl<void, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=.--Type <RET> for more, q to quit, c to continue without paging--
+..) at /usr/include/c++/14/bits/invoke.h:61
+(More stack frames follow...)
+
+Thread 5 (Thread 0x7f30c482a6c0 (LWP 44761) "sharedkv_2rw_be"):
+#0  TwoRW::kv_put (req=..., base=0x7f1ff5835000, buckets=0x7f1ff0800040, num_buckets=8388608, wid=6, num_workers=16, stats=0x0, do_check=false) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:117
+#1  0x0000559daffec93d in TwoRW::two_rw_worker_run (s=0x55a1bceece70) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:373
+#2  0x0000559daffe4211 in operator() (__closure=0x559deffa9368) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:745
+#3  0x0000559daffe6d45 in std::__invoke_impl<void, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
+(More stack frames follow...)
+--Type <RET> for more, q to quit, c to continue without paging--
+
+Thread 4 (Thread 0x7f30c40296c0 (LWP 44762) "sharedkv_2rw_be"):
+#0  0x0000559daffed080 in std::__atomic_base<unsigned long>::load (this=0x55a1bccac680, __m=std::memory_order_acquire) at /usr/include/c++/14/bits/atomic_base.h:497
+#1  TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x55a07875d428, item=...) at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:128
+#2  0x0000559daffec7d6 in TwoRW::two_rw_worker_run (s=0x55a1bceecf00) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:353
+#3  0x0000559daffe4211 in operator() (__closure=0x55a078783ac8) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:745
+(More stack frames follow...)
+
+g4
+Thread 11 (Thread 0x7f5f806236c0 (LWP 44937) "sharedkv_2rw_be"):
+#0  _mm_pause () at /usr/lib/gcc/x86_64-linux-gnu/14/include/xmmintrin.h:1338
+#1  TwoRW::two_rw_worker_run (s=0x5574ceea4f90) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:426
+#2  0x00005570e149f211 in operator() (__closure=0x5574ceaa42d8) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:745
+#3  0x00005570e14a1d45 in std::__invoke_impl<void, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
+(More stack frames follow...)
+
+Thread 10 (Thread 0x7f5f7fe226c0 (LWP 44938) "sharedkv_2rw_be"):
+--Type <RET> for more, q to quit, c to continue without paging--
+#0  0x00005570e14a8049 in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x55738a715458, item=...) at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:124
+#1  0x00005570e14a77d6 in TwoRW::two_rw_worker_run (s=0x5574ceea5020) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:353
+#2  0x00005570e149f211 in operator() (__closure=0x557101f11a38) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:745
+#3  0x00005570e14a1d45 in std::__invoke_impl<void, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
+(More stack frames follow...)
+
+--Type <RET> for more, q to quit, c to continue without paging--
+Thread 9 (Thread 0x7f5f7f6216c0 (LWP 44939) "sharedkv_2rw_be"):
+#0  0x00005570e14a8049 in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x55738a715470, item=...) at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:124
+#1  0x00005570e14a77d6 in TwoRW::two_rw_worker_run (s=0x5574ceea50b0) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:353
+#2  0x00005570e149f211 in operator() (__closure=0x557101f0c198) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:745
+#3  0x00005570e14a1d45 in std::__invoke_impl<void, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
+(More stack frames follow...)
+--Type <RET> for more, q to quit, c to continue without paging--
+
+Thread 8 (Thread 0x7f5f7ee206c0 (LWP 44940) "sharedkv_2rw_be"):
+#0  0x00005570e14a8049 in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x55738a715488, item=...) at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:124
+#1  0x00005570e14a77d6 in TwoRW::two_rw_worker_run (s=0x5574ceea5140) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:353
+#2  0x00005570e149f211 in operator() (__closure=0x55738bef5548) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:745
+#3  0x00005570e14a1d45 in std::__invoke_impl<void, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
+(More stack frames follow...)
+
+--Type <RET> for more, q to quit, c to continue without paging--
+Thread 7 (Thread 0x7f5f7e61f6c0 (LWP 44941) "sharedkv_2rw_be"):
+#0  _mm_pause () at /usr/lib/gcc/x86_64-linux-gnu/14/include/xmmintrin.h:1338
+#1  TwoRW::two_rw_worker_run (s=0x5574ceea51d0) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:426
+#2  0x00005570e149f211 in operator() (__closure=0x55738bef56d8) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:745
+#3  0x00005570e14a1d45 in std::__invoke_impl<void, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
+(More stack frames follow...)
+
+Thread 6 (Thread 0x7f5f7de1e6c0 (LWP 44942) "sharedkv_2rw_be"):
+#0  0x00005570e14a8049 in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x55738a715--Type <RET> for more, q to quit, c to continue without paging--
+4b8, item=...) at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:124
+#1  0x00005570e14a77d6 in TwoRW::two_rw_worker_run (s=0x5574ceea5260) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:353
+#2  0x00005570e149f211 in operator() (__closure=0x557101f611d8) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:745
+#3  0x00005570e14a1d45 in std::__invoke_impl<void, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
+(More stack frames follow...)
+
+Thread 5 (Thread 0x7f5f7d61d6c0 (LWP 44943) "sharedkv_2rw_be"):
+#0  0x00005570e14a8049 in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x55738a7154d0, item=...) at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:124
+--Type <RET> for more, q to quit, c to continue without paging--
+#1  0x00005570e14a77d6 in TwoRW::two_rw_worker_run (s=0x5574ceea52f0) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:353
+#2  0x00005570e149f211 in operator() (__closure=0x557101f61368) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:745
+#3  0x00005570e14a1d45 in std::__invoke_impl<void, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
+(More stack frames follow...)
+
+Thread 4 (Thread 0x7f5f7ce1c6c0 (LWP 44944) "sharedkv_2rw_be"):
+#0  _mm_pause () at /usr/lib/gcc/x86_64-linux-gnu/14/include/xmmintrin.h:1338
+#1  TwoRW::two_rw_worker_run (s=0x5574ceea5380) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:426
+--Type <RET> for more, q to quit, c to continue without paging--
+#2  0x00005570e149f211 in operator() (__closure=0x55738a73bac8) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:745
+#3  0x00005570e14a1d45 in std::__invoke_impl<void, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
+(More stack frames follow...)

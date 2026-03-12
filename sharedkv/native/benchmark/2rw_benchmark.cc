@@ -101,30 +101,38 @@ static void* request_thread_fn(void* arg) {
         uint32_t     block_id = two_rw_acquire_block(ctx, cid);
         UnifiedBlock* block   = two_rw_get_unified_block(ctx, block_id);
 
-        // Step 2: Fill UnifiedBlock (key + value + metadata)
-        const uint32_t klen = static_cast<uint32_t>(
+        // Step 2: Fill UnifiedBlock via NT stores (bypasses LLC → CXL DRAM directly).
+        // NT stores match the proven RequestQueue write path and avoid the dirty-writeback
+        // race where a cached worker write to next_block_id/gsn can overwrite RT's fresh data.
+        const uint32_t klen  = static_cast<uint32_t>(
             std::min(op.key.size(), size_t(127)));
-        block->key_hash = key_hash_fnv1a(op.key.data(), klen);
-        block->key_len  = static_cast<uint16_t>(klen);
-        memcpy(block->data, op.key.data(), klen);
+        const uint32_t khash = key_hash_fnv1a(op.key.data(), klen);
 
+        uint32_t vlen = 0;
         if (op.op_type == YCSBOpType::INSERT  ||
             op.op_type == YCSBOpType::UPDATE   ||
             op.op_type == YCSBOpType::READ_MODIFY_WRITE) {
-            const uint32_t vlen = static_cast<uint32_t>(
+            vlen = static_cast<uint32_t>(
                 std::min(op.value.size(), size_t(1855)));
-            block->val_len = vlen;
-            memcpy(block->data + klen, op.value.data(), vlen);
-        } else {
-            block->val_len = 0;
         }
-        block->is_external = 0;
-        block->t0 = __rdtscp(&aux);
-        // Flush header + key + val to CXL device so cross-machine workers
-        // read correct key_hash/key_len/data instead of stale CXL zeros.
-        // header = 64B (key_hash, key_len, val_len, t0, ...); data = klen + vlen bytes.
-        cxl_flush_range(block, 64 + klen + block->val_len);
-        _mm_sfence();  // order: clwb completes before block_id flows to SN/Worker
+
+        // Build header in a local 64B buffer, then NT-store to CXL block.
+        // This keeps next_block_id=0 (worker will set it during hash-chain insert).
+        alignas(64) char hdr_bytes[64] = {};
+        UnifiedBlock* hdr    = reinterpret_cast<UnifiedBlock*>(hdr_bytes);
+        hdr->key_hash        = khash;
+        hdr->key_len         = static_cast<uint16_t>(klen);
+        hdr->val_len         = vlen;
+        hdr->is_external     = 0;
+        hdr->t0              = __rdtscp(&aux);
+
+        // NT-store header (line 0), key (line 1+), value bytes to CXL DRAM.
+        // All NT stores are ordered by the single _mm_sfence() below.
+        cxl_nt_memcpy(block, hdr_bytes, 64);
+        cxl_nt_memcpy(block->data, op.key.data(), klen);
+        if (vlen > 0)
+            cxl_nt_memcpy(block->data + klen, op.value.data(), vlen);
+        _mm_sfence();  // flush WC buffer to CXL DRAM before block_id flows to SN/Worker
 
         // Step 3: Submit (spin if RequestQueue full)
         const uint8_t  op_type   = static_cast<uint8_t>(ycsb_to_2rw_op(op.op_type));

@@ -165,6 +165,11 @@ static KVResponse kv_put(const KVRequest& req, void* base,
     }
 
     block_new->gsn = req.gsn;
+    // Writeback line 0 (next_block_id + gsn) to CXL DRAM and mark clean.
+    // Prevents dirty-writeback race: if this block is recycled by RT and refilled
+    // via NT stores, a stale dirty eviction of this line would corrupt the new header.
+    cxl_clwb(block_new);
+    _mm_sfence();
 
     if (stats) stats->record(stats->put, depth, id_old != 0);
 
