@@ -110,14 +110,24 @@ static KVResponse kv_put(const KVRequest& req, void* base,
     cxl_clflushopt(static_cast<char*>(static_cast<void*>(block_new)) + 128);  // line 2
     _mm_lfence();  // wait for all clflushopt + prior loads to complete
 
-    // CXL cross-machine visibility: spin until block reflects RT's write.
-    // req.key_hash/key_len are delivered reliably via the CXL queue (CLFLUSHOPT-read
-    // by the consumer).  If block still shows stale data, the CLWB from the remote RT
-    // has not yet propagated to CXL DRAM — retry until it does.
-    while (block_new->key_hash != req.key_hash || block_new->key_len != req.key_len) {
-        _mm_pause();
-        cxl_clflushopt(block_new);
-        _mm_lfence();
+    // CXL visibility: spin until block reflects RT's NT store.
+    {
+        uint64_t spin = 0;
+        while (block_new->key_hash != req.key_hash || block_new->key_len != req.key_len) {
+            if (__builtin_expect(++spin == 1000000, 0)) {
+                fprintf(stderr,
+                    "[W%u] block visibility STUCK: block_id=%u block@%p "
+                    "block->key_hash=0x%08x req.key_hash=0x%08x "
+                    "block->key_len=%u req.key_len=%u client_id=%u\n",
+                    wid, req.block_id, (void*)block_new,
+                    block_new->key_hash, req.key_hash,
+                    block_new->key_len, req.key_len,
+                    req.client_id);
+            }
+            _mm_pause();
+            cxl_clflushopt(block_new);
+            _mm_lfence();
+        }
     }
 
     // Use req.key_hash (authoritative) for bucket routing; block data is now confirmed visible.
@@ -200,11 +210,21 @@ static KVResponse kv_get(const KVRequest& req, void* base,
     cxl_clflushopt(static_cast<char*>(static_cast<void*>(req_block)) + 128);
     _mm_lfence();
 
-    // CXL cross-machine visibility: spin until block reflects RT's write.
-    while (req_block->key_hash != req.key_hash || req_block->key_len != req.key_len) {
-        _mm_pause();
-        cxl_clflushopt(req_block);
-        _mm_lfence();
+    // CXL visibility: spin until block reflects RT's NT store.
+    {
+        uint64_t spin = 0;
+        while (req_block->key_hash != req.key_hash || req_block->key_len != req.key_len) {
+            if (__builtin_expect(++spin == 1000000, 0)) {
+                fprintf(stderr,
+                    "[W%u] GET block visibility STUCK: block_id=%u block@%p "
+                    "block->key_hash=0x%08x req.key_hash=0x%08x client_id=%u\n",
+                    wid, req.block_id, (void*)req_block,
+                    req_block->key_hash, req.key_hash, req.client_id);
+            }
+            _mm_pause();
+            cxl_clflushopt(req_block);
+            _mm_lfence();
+        }
     }
 
     const uint32_t key_hash = req.key_hash;

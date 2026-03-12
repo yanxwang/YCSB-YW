@@ -135,10 +135,20 @@ static void* request_thread_fn(void* arg) {
         _mm_sfence();  // flush WC buffer to CXL DRAM before block_id flows to SN/Worker
 
         // Step 3: Submit (spin if RequestQueue full)
+        // Readback: verify NT store reached CXL DRAM before handing block_id to worker.
+        // After NT store + SFENCE, block cache line is NOT in RT's cache (NT bypasses cache).
+        // A plain load here fetches from CXL DRAM directly.
+        if (__builtin_expect(block->key_hash != khash, 0)) {
+            fprintf(stderr,
+                "[RT cid=%u] NT store readback MISMATCH: block_id=%u "
+                "block@%p key_hash expected=0x%08x got=0x%08x\n",
+                cid, block_id, (void*)block, khash, block->key_hash);
+        }
+
         const uint8_t  op_type   = static_cast<uint8_t>(ycsb_to_2rw_op(op.op_type));
         const uint32_t worker_id = two_rw_route(op.key.data(), klen, m);
         while (!two_rw_submit(ctx, cid, block_id, worker_id, op_type,
-                               block->key_hash, block->key_len)) {
+                               khash, static_cast<uint16_t>(klen))) {
             two_rw_drain_freeblocks(ctx, cid);  // prevent deadlock with RespThread
             req_enq_waits++;
             _mm_pause();
