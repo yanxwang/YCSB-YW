@@ -143,6 +143,9 @@ static void* request_thread_fn(void* arg) {
         block->next_block_id = 0;
         block->gsn           = 0;
         block->t0            = __rdtscp(&aux);
+        // Debug: store writer identity (node_id:cid) in t1 for STUCK diagnosis
+        block->t1            = (static_cast<uint64_t>(ctx->config.node_id) << 32)
+                             | static_cast<uint64_t>(cid);
         memcpy(block->data, op.key.data(), klen);
         if (vlen > 0)
             memcpy(block->data + klen, op.value.data(), vlen);

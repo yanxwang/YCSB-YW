@@ -117,11 +117,15 @@ static KVResponse kv_put(const KVRequest& req, void* base,
             if (__builtin_expect(++spin == 1000000, 0)) {
                 // Dump full block header vs req for diagnosis
                 const char* bdata = block_new->data;
+                const uint64_t t1_raw = block_new->t1;
+                const uint32_t writer_node = static_cast<uint32_t>(t1_raw >> 32);
+                const uint32_t writer_cid  = static_cast<uint32_t>(t1_raw & 0xFFFFFFFF);
                 fprintf(stderr,
                     "[W%u] block visibility STUCK: block_id=%u block@%p client_id=%u\n"
                     "  req:   key_hash=0x%08x key_len=%u op_type=%u\n"
                     "  block: key_hash=0x%08x key_len=%u val_len=%u is_external=%u\n"
                     "         next_block_id=%lu gsn=%lu t0=%lu\n"
+                    "         writer_node=%u writer_cid=%u\n"
                     "         key[0..15]: %02x %02x %02x %02x %02x %02x %02x %02x"
                     " %02x %02x %02x %02x %02x %02x %02x %02x\n",
                     wid, req.block_id, (void*)block_new, req.client_id,
@@ -130,6 +134,7 @@ static KVResponse kv_put(const KVRequest& req, void* base,
                     block_new->val_len, (unsigned)block_new->is_external,
                     (unsigned long)block_new->next_block_id,
                     (unsigned long)block_new->gsn, (unsigned long)block_new->t0,
+                    writer_node, writer_cid,
                     (uint8_t)bdata[0],  (uint8_t)bdata[1],  (uint8_t)bdata[2],  (uint8_t)bdata[3],
                     (uint8_t)bdata[4],  (uint8_t)bdata[5],  (uint8_t)bdata[6],  (uint8_t)bdata[7],
                     (uint8_t)bdata[8],  (uint8_t)bdata[9],  (uint8_t)bdata[10], (uint8_t)bdata[11],
