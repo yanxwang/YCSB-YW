@@ -102,8 +102,8 @@ static KVResponse kv_put(const KVRequest& req, void* base,
     const uint32_t id_new    = req.block_id;
     UnifiedBlock*  block_new = ub(base, id_new);
 
-    // Invalidate block_new from local cache so we read RT's freshly clwb'd
-    // data from CXL device.  Needed when RT ran on a different machine.
+    // Invalidate block_new from local cache so we read RT's NT-stored data
+    // from CXL DRAM.  Needed when RT ran on a different machine.
     // Header (line 0: key_hash/key_len/val_len/t0) + 2 data lines (up to 128B key).
     cxl_clflushopt(block_new);                            // line 0: header
     cxl_clflushopt(static_cast<char*>(static_cast<void*>(block_new)) + 64);   // line 1
@@ -175,6 +175,9 @@ static KVResponse kv_put(const KVRequest& req, void* base,
     }
 
     block_new->gsn = req.gsn;
+    // SFENCE: drain store buffer so gsn + next_block_id are in cache (dirty)
+    // before CLWB.  CLWB is weakly ordered w.r.t. stores (Intel SDM).
+    _mm_sfence();
     // Writeback line 0 (next_block_id + gsn) to CXL DRAM and mark clean.
     // Prevents dirty-writeback race: if this block is recycled by RT and refilled
     // via NT stores, a stale dirty eviction of this line would corrupt the new header.
@@ -204,7 +207,7 @@ static KVResponse kv_get(const KVRequest& req, void* base,
     const uint32_t id_req    = req.block_id;
     UnifiedBlock*  req_block = ub(base, id_req);
 
-    // Invalidate req_block from local cache to read RT's freshly clwb'd data.
+    // Invalidate req_block from local cache to read RT's NT-stored data from CXL DRAM.
     cxl_clflushopt(req_block);
     cxl_clflushopt(static_cast<char*>(static_cast<void*>(req_block)) + 64);
     cxl_clflushopt(static_cast<char*>(static_cast<void*>(req_block)) + 128);
@@ -276,7 +279,7 @@ static KVResponse kv_del(const KVRequest& req, void* base,
     const uint32_t id_cmd    = req.block_id;
     UnifiedBlock*  cmd_block = ub(base, id_cmd);
 
-    // Invalidate cmd_block from local cache to read RT's freshly clwb'd data.
+    // Invalidate cmd_block from local cache to read RT's NT-stored data from CXL DRAM.
     cxl_clflushopt(cmd_block);
     cxl_clflushopt(static_cast<char*>(static_cast<void*>(cmd_block)) + 64);
     cxl_clflushopt(static_cast<char*>(static_cast<void*>(cmd_block)) + 128);
@@ -315,10 +318,17 @@ static KVResponse kv_del(const KVRequest& req, void* base,
         if (cur->key_hash == key_hash && cur->key_len == key_len &&
             memcmp(cur->data, key, key_len) == 0) {
             uint32_t next_id = static_cast<uint32_t>(cur->next_block_id);
-            if (prev_id == 0)
+            if (prev_id == 0) {
                 bucket->head_block_id = next_id;
-            else
+            } else {
                 ub(base, prev_id)->next_block_id = next_id;
+                // SFENCE + CLWB: same dirty-writeback race prevention as kv_put.
+                // prev block's header line is now dirty; if prev is later recycled
+                // and RT refills it via NT stores, a stale eviction would corrupt
+                // the new data.  CLWB writes back + marks clean.
+                _mm_sfence();
+                cxl_clwb(ub(base, prev_id));
+            }
             _mm_sfence();
 
             if (stats) stats->record(stats->del, depth, true);

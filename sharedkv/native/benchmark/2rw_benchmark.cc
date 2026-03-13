@@ -101,9 +101,18 @@ static void* request_thread_fn(void* arg) {
         uint32_t     block_id = two_rw_acquire_block(ctx, cid);
         UnifiedBlock* block   = two_rw_get_unified_block(ctx, block_id);
 
-        // Step 2: Fill UnifiedBlock via NT stores (bypasses LLC → CXL DRAM directly).
-        // NT stores match the proven RequestQueue write path and avoid the dirty-writeback
-        // race where a cached worker write to next_block_id/gsn can overwrite RT's fresh data.
+        // Step 2: Fill UnifiedBlock via pure NT stores to CXL DRAM.
+        //
+        // Assemble the entire block content (header + key + value) in a local
+        // stack buffer using regular stores (fast, local DRAM), then NT-store
+        // the whole thing to the CXL block in one shot.  The length is rounded
+        // up to the next 8-byte boundary so cxl_nt_memcpy has zero remainder
+        // bytes — avoiding the mixed NT/regular store pitfall that causes
+        // cross-machine STUCK (regular store remainder stays in L1 dirty,
+        // never reaches CXL DRAM; single-machine MESI snooping masks this).
+        //
+        // NT store → WC buffer → SFENCE → CXL DRAM.
+        // Same proven path as CXLSpscQueue::enqueue().
         const uint32_t klen  = static_cast<uint32_t>(
             std::min(op.key.size(), size_t(127)));
         const uint32_t khash = key_hash_fnv1a(op.key.data(), klen);
@@ -116,40 +125,24 @@ static void* request_thread_fn(void* arg) {
                 std::min(op.value.size(), size_t(1855)));
         }
 
-        // Build header in a local 64B buffer, then NT-store to CXL block.
-        // This keeps next_block_id=0 (worker will set it during hash-chain insert).
-        alignas(64) char hdr_bytes[64] = {};
-        UnifiedBlock* hdr    = reinterpret_cast<UnifiedBlock*>(hdr_bytes);
-        hdr->key_hash        = khash;
-        hdr->key_len         = static_cast<uint16_t>(klen);
-        hdr->val_len         = vlen;
-        hdr->is_external     = 0;
-        hdr->t0              = __rdtscp(&aux);
-
-        // NT-store header (line 0), key (line 1+), value bytes to CXL DRAM.
-        // All NT stores are ordered by the single _mm_sfence() below.
-        cxl_nt_memcpy(block, hdr_bytes, 64);
-        cxl_nt_memcpy(block->data, op.key.data(), klen);
+        // Assemble block content in local buffer (zeroed → next_block_id=0, padding=0).
+        alignas(64) char local_buf[2048] = {};
+        UnifiedBlock* hdr = reinterpret_cast<UnifiedBlock*>(local_buf);
+        hdr->key_hash     = khash;
+        hdr->key_len      = static_cast<uint16_t>(klen);
+        hdr->val_len      = vlen;
+        hdr->is_external  = 0;
+        hdr->t0           = __rdtscp(&aux);
+        memcpy(hdr->data, op.key.data(), klen);
         if (vlen > 0)
-            cxl_nt_memcpy(block->data + klen, op.value.data(), vlen);
-        _mm_sfence();  // flush WC buffer → LLC
-        // NT stores on WB-mapped CXL land in the local LLC, not in CXL DRAM.
-        // CLWB evicts each modified line from LLC → CXL DRAM so remote workers
-        // can see the data via CLFLUSHOPT+LFENCE.
-        cxl_flush_range(block, 64 + klen + vlen);
-        _mm_sfence();  // ensure CLWB completes before block_id flows to SN/Worker
+            memcpy(hdr->data + klen, op.value.data(), vlen);
+
+        // Pure NT store to CXL block.  Round up to 8B so remainder == 0.
+        const size_t nt_len = (64 + klen + vlen + 7) & ~size_t(7);
+        cxl_nt_memcpy(block, local_buf, nt_len);
+        _mm_sfence();   // flush WC buffer → CXL DRAM
 
         // Step 3: Submit (spin if RequestQueue full)
-        // Readback: verify NT store reached CXL DRAM before handing block_id to worker.
-        // After NT store + SFENCE, block cache line is NOT in RT's cache (NT bypasses cache).
-        // A plain load here fetches from CXL DRAM directly.
-        if (__builtin_expect(block->key_hash != khash, 0)) {
-            fprintf(stderr,
-                "[RT cid=%u] NT store readback MISMATCH: block_id=%u "
-                "block@%p key_hash expected=0x%08x got=0x%08x\n",
-                cid, block_id, (void*)block, khash, block->key_hash);
-        }
-
         const uint8_t  op_type   = static_cast<uint8_t>(ycsb_to_2rw_op(op.op_type));
         const uint32_t worker_id = two_rw_route(op.key.data(), klen, m);
         while (!two_rw_submit(ctx, cid, block_id, worker_id, op_type,
