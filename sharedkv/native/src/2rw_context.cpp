@@ -351,10 +351,18 @@ static void init_local_structures(TwoRWContext* ctx) {
             ctx->layout.globalidmap(ctx->cxl_base));
         ctx->block_bitmap_words = (ctx->layout.total_blocks + 63) / 64;
 
-        // Spread scan_hints across bitmap to reduce contention
+        // Spread scan_hints within this node's bitmap partition.
+        // Each node owns an exclusive range to avoid cross-machine LOCK BTR races.
         uint32_t total_words = ctx->block_bitmap_words;
+        uint32_t num_nodes = cfg.num_nodes;
+        uint32_t node_id   = cfg.node_id;
+        uint32_t range_len = total_words / num_nodes;
+        uint32_t range_beg = node_id * range_len;
+        uint32_t range_end = (node_id == num_nodes - 1) ? total_words
+                                                         : range_beg + range_len;
+        uint32_t range_size = range_end - range_beg;
         for (uint32_t j = 0; j < n; j++) {
-            ctx->local_block_caches[j].scan_hint = (j * total_words) / n;
+            ctx->local_block_caches[j].scan_hint = range_beg + (j * range_size) / n;
         }
     }
 

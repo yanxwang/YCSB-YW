@@ -639,12 +639,25 @@ inline uint32_t bitmap_alloc_batch(TwoRWContext* ctx, uint32_t client_id,
     const uint32_t total_words = ctx->block_bitmap_words;
     if (!bmap || total_words == 0) return 0;
 
+    // Partition bitmap by node_id to avoid cross-machine LOCK BTR races.
+    // CXL Type 3 HDM-D has no inter-host cache coherency, so LOCK BTR on
+    // the same word from two machines is NOT atomic — both can allocate the
+    // same block_id.  Each node scans only its own exclusive range.
+    const uint32_t num_nodes = ctx->config.num_nodes;
+    const uint32_t node_id   = ctx->config.node_id;
+    const uint32_t range_len = total_words / num_nodes;
+    const uint32_t range_beg = node_id * range_len;
+    const uint32_t range_end = (node_id == num_nodes - 1) ? total_words
+                                                           : range_beg + range_len;
+
     uint32_t acquired = 0;
     uint32_t wi = cache.scan_hint;
+    if (wi < range_beg || wi >= range_end) wi = range_beg;  // clamp to own range
     uint32_t scanned = 0;
+    const uint32_t range_size = range_end - range_beg;
 
-    while (acquired < count && scanned < total_words) {
-        if (wi >= total_words) wi = 0;
+    while (acquired < count && scanned < range_size) {
+        if (wi >= range_end) wi = range_beg;
         uint64_t word = bmap[wi];
         if (word != 0) {
             while (word != 0 && acquired < count) {
@@ -660,7 +673,7 @@ inline uint32_t bitmap_alloc_batch(TwoRWContext* ctx, uint32_t client_id,
         wi++;
         scanned++;
     }
-    cache.scan_hint = wi < total_words ? wi : 0;
+    cache.scan_hint = (wi < range_end) ? wi : range_beg;
     return acquired;
 }
 
