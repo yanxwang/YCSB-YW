@@ -101,18 +101,7 @@ static void* request_thread_fn(void* arg) {
         uint32_t     block_id = two_rw_acquire_block(ctx, cid);
         UnifiedBlock* block   = two_rw_get_unified_block(ctx, block_id);
 
-        // Step 2: Fill UnifiedBlock via pure NT stores to CXL DRAM.
-        //
-        // Assemble the entire block content (header + key + value) in a local
-        // stack buffer using regular stores (fast, local DRAM), then NT-store
-        // the whole thing to the CXL block in one shot.  The length is rounded
-        // up to the next 8-byte boundary so cxl_nt_memcpy has zero remainder
-        // bytes — avoiding the mixed NT/regular store pitfall that causes
-        // cross-machine STUCK (regular store remainder stays in L1 dirty,
-        // never reaches CXL DRAM; single-machine MESI snooping masks this).
-        //
-        // NT store → WC buffer → SFENCE → CXL DRAM.
-        // Same proven path as CXLSpscQueue::enqueue().
+        // Step 2: Fill UnifiedBlock and flush to CXL DRAM.
         const uint32_t klen  = static_cast<uint32_t>(
             std::min(op.key.size(), size_t(127)));
         const uint32_t khash = key_hash_fnv1a(op.key.data(), klen);
@@ -125,6 +114,7 @@ static void* request_thread_fn(void* arg) {
                 std::min(op.value.size(), size_t(1855)));
         }
 
+#if 0  // NT store path — disabled: does not reach CXL DRAM for cross-machine reads
         // Assemble block content in local buffer (zeroed → next_block_id=0, padding=0).
         alignas(64) char local_buf[2048] = {};
         UnifiedBlock* hdr = reinterpret_cast<UnifiedBlock*>(local_buf);
@@ -141,6 +131,27 @@ static void* request_thread_fn(void* arg) {
         const size_t nt_len = (64 + klen + vlen + 7) & ~size_t(7);
         cxl_nt_memcpy(block, local_buf, nt_len);
         _mm_sfence();   // flush WC buffer → CXL DRAM
+#else   // Regular store + CLFLUSHOPT path — reliable cross-machine visibility
+        // 1. Regular stores → local cache (dirty)
+        // 2. SFENCE → drain store buffer
+        // 3. CLFLUSHOPT per cache line → write back to CXL DRAM + invalidate
+        // 4. SFENCE → ensure flush complete before enqueue
+        block->key_hash      = khash;
+        block->key_len       = static_cast<uint16_t>(klen);
+        block->val_len       = vlen;
+        block->is_external   = 0;
+        block->next_block_id = 0;
+        block->gsn           = 0;
+        block->t0            = __rdtscp(&aux);
+        memcpy(block->data, op.key.data(), klen);
+        if (vlen > 0)
+            memcpy(block->data + klen, op.value.data(), vlen);
+
+        _mm_sfence();   // stores → cache (dirty)
+        const size_t flush_len = 64 + klen + vlen;
+        cxl_invalidate_range(block, flush_len);
+        _mm_sfence();   // CLFLUSHOPT → CXL DRAM
+#endif
 
         // Step 3: Submit (spin if RequestQueue full)
         const uint8_t  op_type   = static_cast<uint8_t>(ycsb_to_2rw_op(op.op_type));
