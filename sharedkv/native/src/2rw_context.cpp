@@ -330,12 +330,15 @@ static void init_local_structures(TwoRWContext* ctx) {
         ctx->free_block_queues[j].init();
     }
 
-    // LocalBlockCaches — pre-fill client j with block IDs [j*K+1 .. (j+1)*K]
+    // LocalBlockCaches — pre-fill using GLOBAL client_id for base_id.
+    // Master marks blocks [1 .. N_total*K] as in-use in bitmap.
+    // Each node must use its global client range to avoid overlapping block_ids.
     // (block 0 is reserved sentinel, never allocated)
     ctx->local_block_caches = new LocalBlockCache[n];
     for (uint32_t j = 0; j < n; j++) {
         auto& cache = ctx->local_block_caches[j];
-        const uint32_t base_id = j * cfg.slots_per_client + 1;
+        const uint32_t global_cid = cfg.global_client_start + j;
+        const uint32_t base_id = global_cid * cfg.slots_per_client + 1;
         uint32_t k = 0;
         // Fill local stack (capacity LOCAL_CACHE_CAP)
         for (; k < cfg.slots_per_client && cache.top < LOCAL_CACHE_CAP; k++)
