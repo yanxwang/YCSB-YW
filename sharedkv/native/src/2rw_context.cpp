@@ -154,9 +154,15 @@ static void init_cxl_memory(void* base, const TwoRWLayout& L,
     // Flush ENTIRE CXL region to DRAM so slave nodes see initialized data.
     // Without this, all the memset/init above stays dirty in master's cache,
     // and slaves read stale CXL DRAM content from previous runs.
+    fprintf(stderr, "[2RW] Flushing %lu MB of CXL memory to DRAM...\n",
+            (unsigned long)(L.total_size >> 20));
+    uint64_t flush_start = __rdtsc();
     _mm_sfence();  // drain store buffer → all stores in cache (dirty)
     cxl_invalidate_range(base, L.total_size);  // CLFLUSHOPT every cache line → CXL DRAM
     _mm_sfence();  // order flushes before ready_flag
+    uint64_t flush_cycles = __rdtsc() - flush_start;
+    fprintf(stderr, "[2RW] CXL flush done: %lu cycles (~%.1f ms at 3GHz)\n",
+            (unsigned long)flush_cycles, flush_cycles / 3e6);
 
     // Signal CXL memory is fully initialized (multi-machine: worker nodes spin on this).
     hdr->ready_flag = HEADER_READY;
