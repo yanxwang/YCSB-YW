@@ -151,8 +151,14 @@ static void init_cxl_memory(void* base, const TwoRWLayout& L,
         }
     }
 
+    // Flush ENTIRE CXL region to DRAM so slave nodes see initialized data.
+    // Without this, all the memset/init above stays dirty in master's cache,
+    // and slaves read stale CXL DRAM content from previous runs.
+    _mm_sfence();  // drain store buffer → all stores in cache (dirty)
+    cxl_invalidate_range(base, L.total_size);  // CLFLUSHOPT every cache line → CXL DRAM
+    _mm_sfence();  // order flushes before ready_flag
+
     // Signal CXL memory is fully initialized (multi-machine: worker nodes spin on this).
-    // Flush to CXL DRAM so remote nodes see it via CLFLUSHOPT.
     hdr->ready_flag = HEADER_READY;
     _mm_sfence();
     _mm_clflushopt(&hdr->ready_flag);
