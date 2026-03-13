@@ -330,22 +330,27 @@ static void init_local_structures(TwoRWContext* ctx) {
         ctx->free_block_queues[j].init();
     }
 
-    // LocalBlockCaches — pre-fill using GLOBAL client_id for base_id.
-    // Master marks blocks [1 .. N_total*K] as in-use in bitmap.
-    // Each node must use its global client range to avoid overlapping block_ids.
+    // LocalBlockCaches — array sized by GLOBAL num_clients (n), indexed by
+    // global client_id.  Only pre-fill entries for THIS node's local clients.
+    // Master bitmap marks blocks [1 .. n * K] as in-use, so each global_cid's
+    // range [cid*K+1 .. (cid+1)*K] is reserved.  Nodes that pre-fill entries
+    // for non-local clients would claim blocks outside the reserved range,
+    // leading to double-allocation with bitmap.
     // (block 0 is reserved sentinel, never allocated)
     ctx->local_block_caches = new LocalBlockCache[n];
-    for (uint32_t j = 0; j < n; j++) {
-        auto& cache = ctx->local_block_caches[j];
-        const uint32_t global_cid = cfg.global_client_start + j;
-        const uint32_t base_id = global_cid * cfg.slots_per_client + 1;
-        uint32_t k = 0;
-        // Fill local stack (capacity LOCAL_CACHE_CAP)
-        for (; k < cfg.slots_per_client && cache.top < LOCAL_CACHE_CAP; k++)
-            cache.stack[cache.top++] = base_id + k;
-        // Overflow: push remaining into FreeBlockQueue
-        for (; k < cfg.slots_per_client; k++)
-            ctx->free_block_queues[j].push(base_id + k);
+    {
+        const uint32_t local_n   = cfg.global_client_count;   // local clients on this node
+        const uint32_t cid_start = cfg.global_client_start;   // first global client_id
+        for (uint32_t j = 0; j < local_n; j++) {
+            const uint32_t cid = cid_start + j;               // global client_id
+            auto& cache = ctx->local_block_caches[cid];       // index by global cid
+            const uint32_t base_id = cid * cfg.slots_per_client + 1;
+            uint32_t k = 0;
+            for (; k < cfg.slots_per_client && cache.top < LOCAL_CACHE_CAP; k++)
+                cache.stack[cache.top++] = base_id + k;
+            for (; k < cfg.slots_per_client; k++)
+                ctx->free_block_queues[cid].push(base_id + k);
+        }
     }
 
     // Initialize bitmap pointer and scan hints
@@ -364,8 +369,12 @@ static void init_local_structures(TwoRWContext* ctx) {
         uint32_t range_end = (node_id == num_nodes - 1) ? total_words
                                                          : range_beg + range_len;
         uint32_t range_size = range_end - range_beg;
-        for (uint32_t j = 0; j < n; j++) {
-            ctx->local_block_caches[j].scan_hint = range_beg + (j * range_size) / n;
+        const uint32_t local_n2   = cfg.global_client_count;
+        const uint32_t cid_start2 = cfg.global_client_start;
+        for (uint32_t j = 0; j < local_n2; j++) {
+            const uint32_t cid = cid_start2 + j;
+            ctx->local_block_caches[cid].scan_hint =
+                range_beg + (j * range_size) / local_n2;
         }
     }
 
