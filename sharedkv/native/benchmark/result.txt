@@ -1,126 +1,358 @@
-g3
-Thread 11 (Thread 0x7f30c78306c0 (LWP 44755) "sharedkv_2rw_be"):
-#0  TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x55a07875d380, item=...) at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:125
-#1  0x0000559daffec7d6 in TwoRW::two_rw_worker_run (s=0x55a1bceecb10) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:353
-#2  0x0000559daffe4211 in operator() (__closure=0x55a1bcaec2d8) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:745
-#3  0x0000559daffe6d45 in std::__invoke_impl<void, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
-(More stack frames follow...)
+root@debian-615-uintr:~/YCSB-YW/sharedkv/native/benchmark# ./run_multi_machine.sh master
+==========================================
+Building SharedKV Native Benchmark
+==========================================
+Running CMake...
+-- ------------------------------------
+-- Build type: Debug
+-- ------------------------------------
+-- Configuring done (0.1s)
+-- Generating done (0.0s)
+-- Build files have been written to: /root/YCSB-YW/sharedkv/native/benchmark/build
+Building...
+[100%] Built target sharedkv_2rw_benchmark
 
-Thread 10 (Thread 0x7f30c702f6c0 (LWP 44756) "sharedkv_2rw_be"):
+==========================================
+Build complete!
+Executable: /root/YCSB-YW/sharedkv/native/benchmark/build/sharedkv_benchmark
+==========================================
+==============================================
+  Role:       master (node 0)
+  Workload:   workloada
+  CXL:        /dev/dax0.0
+  NUMA:       1
+  Global:     n=2  m=4  s=2
+  Local SN:   [0 .. +1)
+  Local W:    [0 .. +2)
+  Local C:    [0 .. +1)
+==============================================
+
+Command:
+  ./build/sharedkv_2rw_benchmark   --workload workloada   --workload-dir /mnt/ywang/workloads   --numa 1   --num-nodes 2   --node-id 0   --cxl-device /dev/dax0.0   --num-clients 2   --num-workers 4   --num-synchronizers 2   --dequeue-batch 64   --read-ack-batch 64   --global-sn-start 0   --global-sn-count 1   --global-worker-start 0   --global-worker-count 2   --global-client-start 0   --global-client-count 1   --worker-cpu-start 3   --client-cpu-start 14   --latency   --local-workerring --verbose --counters
+
+==============================================
+SharedKV 2RW YCSB Benchmark
+==============================================
+  Workload:              workloada
+  NUMA node:             1
+  num_clients (n):       2
+  num_workers (m):       4
+  num_synchronizers (s): 2  (workers per SN: 2)
+  slots_per_client:      1024
+  num_buckets:           8388608
+  queue_depth:           1024
+  memory_size:           64 GB
+  CPU layout:
+    Poller:     CPU 0
+    SN0:        CPU 2
+    SN1:        CPU 3
+    Workers:    CPU 3..6
+    ReqTh:      CPU 14..15
+    RespTh:     CPU 16..17
+  dequeue_batch:         64
+  read_ack_batch:        64
+  local_workerring:      yes (DRAM)
+  stats:                 disabled
+  counters:              enabled
+  verbose:               enabled
+  Mode:         Latency  (auto ops/client from workload)
+==============================================
+
+[Main] Loading workload files...
+[Benchmark] Loaded 10000000 operations from /mnt/ywang/workloads/workloada_load.txt
+[Benchmark] Loaded 10000000 operations from /mnt/ywang/workloads/workloada_trans.txt
+[Main] load_ops=10000000  trans_ops=10000000
+
+  ops_per_client (auto): 5000000  (10000000 ops / 2 clients)
+  TSC frequency: ~2000 MHz
+
+[Main] Initializing 2RW context...
+[2RW Config]
+  numa_node            = 1
+  num_clients (n)      = 2
+  num_workers (m)      = 4
+  num_synchronizers(s) = 2  (workers per SN: 2)
+  slots_per_client     = 1024  (blocks pre-alloc per client)
+  num_buckets          = 8388608
+  queue_depth          = 1024
+  memory_size          = 65536 MB
+  worker_cpu_start     = 3  (workers on CPU 3..6)
+  local_workerring     = yes (DRAM)
+  poller_mode          = response
+[2RW] NUMA topology: CPU0_node=0  CXL_node=1  OK (CPU0 local DRAM != CXL node)
+[2RW] CXL device '/dev/dax0.0' mapped at 0x7eedc1800000 (65536 MB)
+[2RW] CXL memory initialized. Layout:
+  header            @ 0x0000000000  (64B)
+  hash_table        @ 0x0000000040  (8388608 buckets × 8B = 65536 KB)
+  request_queues    @ 0x0004000040  (2 clients × 2 SNs = 4 queues)
+  worker_rings      @ 0x0004100340  (4 rings)
+  response_queues   @ 0x0004200640  (2 × 4 = 8 queues)
+  globalidmap       @ 0x0004400c40  (26815691 blocks → 3351962 B bitmap)
+  unifiedblockpool  @ 0x0004733800  (26815691 blocks × 2048B = 52374 MB)
+  spillover         @ 0x0ccdd99000  (2 clients × 6702286 KB = 13404572 KB)
+[2RW] Master init: node_id=0, num_nodes=2
+[2RW] sn_req_consumers[0]=0x7efe99e8f000  NUMA node 0  (expected 0)  OK
+[2RW] sn_ring_producers[0]=0x7efe99e8e000  NUMA node 0  (expected 0)  OK
+[2RW] sn_req_consumers[1]=0x7efe99e8d000  NUMA node 0  (expected 0)  OK
+[2RW] sn_ring_producers[1]=0x7efe99e8c000  NUMA node 0  (expected 0)  OK
+[2RW] local_workerring: allocated 4 DRAM rings (256 KB each)
+[2RW] sync_state[0].gsn=0x7efe998ff080  NUMA node 0  (expected 0)  OK
+[2RW] sync_state[1].gsn=0x7efe998fe080  NUMA node 0  (expected 0)  OK
+[Main] Starting core threads (Sync, Poller, Workers)...
+[2RW] Threads started: poller_mode=response, SN[0..0]=CPU[2..2], Workers[0..1]=CPU[3..4]
+[2RW] Node 0: barrier — waiting for 2 nodes...
+[RespPoller] Started. Monitoring clients [0..1) × 4 workers
+[SN0] GSN Microbenchmark (isolated, 500000 iters, rdtscp): 60.52 ticks/fetch_add(2)
+[SN0] sync_state->gsn address: 0x7efe998ff080
+[SN0] Started. Polling 2 RequestQueues → 2 WorkerRings (workers 0..1)
+[SN0]   Mode: dequeue_batch_pipelined (DEQUEUE_BATCH=64  READ_ACK_BATCH=64)
+[SN0]   Timing: rdtscp. A=pipelined_batch_deq/op  C=enq/op  F=flush/op
+ 
+===== PIPELINE DIAGNOSTIC (SIGUSR1) =====
+RequestQueues [n=2 × s=2]:
+WorkerRings [m=4]:
+  WR[0]: fill=0 (w=0 r=0)
+  WR[1]: fill=0 (w=0 r=0)
+  WR[2]: fill=0 (w=0 r=0)
+  WR[3]: fill=0 (w=0 r=0)
+ResponseQueues [n=2 × m=4]:
+FreeBlockQueues [n=2]:
+  FBQ[c0]: fill=0 (w=0 r=0)
+  FBQ[c1]: fill=0 (w=0 r=0)
+LocalBlockCaches [n=2]:
+  Cache[c0]: top=1024
+  Cache[c1]: top=1024
+Bitmap: free=26813642 / total=26815691
+===== END DIAGNOSTIC =====
+root@debian-615-uintr:~/YCSB-YW/sharedkv/native/benchmark# gdb -p $(p
+grep sharedkv)
+GNU gdb (Debian 16.3-1) 16.3
+Copyright (C) 2024 Free Software Foundation, Inc.
+License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>
+This is free software: you are free to change and redistribute it.
+There is NO WARRANTY, to the extent permitted by law.
+Type "show copying" and "show warranty" for details.
+This GDB was configured as "x86_64-linux-gnu".
+Type "show configuration" for configuration details.
+For bug reporting instructions, please see:
+<https://www.gnu.org/software/gdb/bugs/>.
 --Type <RET> for more, q to quit, c to continue without paging--
-#0  _mm_pause () at /usr/lib/gcc/x86_64-linux-gnu/14/include/xmmintrin.h:1338
-#1  TwoRW::two_rw_worker_run (s=0x55a1bceecba0) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:426
-#2  0x0000559daffe4211 in operator() (__closure=0x559deff59a38) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:745
-#3  0x0000559daffe6d45 in std::__invoke_impl<void, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
-(More stack frames follow...)
+Find the GDB manual and other documentation resources online at:
+    <http://www.gnu.org/software/gdb/documentation/>.
 
-Thread 9 (Thread 0x7f30c682e6c0 (LWP 44757) "sharedkv_2rw_be"):
-#0  TwoRW::kv_put (req=..., base=0x7f1ff5835000, buckets=0x7f1ff0800040, num_buckets=8388608, wid=2, num_workers=16, stats=0x0, do_check=false) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:117
+For help, type "help".
+Type "apropos word" to search for commands related to "word".
+Attaching to process 44196
+[New LWP 44390]
+[New LWP 44389]
+[New LWP 44388]
+[New LWP 44387]
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib/x86_64-linux-gnu/libthread_db.so.1".
+TwoRW::two_rw_node_barrier (ctx=0x7efe99e90000)
+    at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:837
+837                 if (!ctx->cxl_node_sync->node_ready[k]) {
+(gdb) 
+(gdb) info threads
+  Id   Target Id                                           Frame 
+* 1    Thread 0x7efe99900780 (LWP 44196) "sharedkv_2rw_be" TwoRW::two_rw_node_barrier (ctx=0x7efe99e90000)
+    at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:837
+  2    Thread 0x7efe980fa6c0 (LWP 44390) "sharedkv_2rw_be" _mm_pause
+    () at /usr/lib/gcc/x86_64-linux-gnu/14/include/xmmintrin.h:1338
+  3    Thread 0x7efe988fb6c0 (LWP 44389) "sharedkv_2rw_be" 0x000056152e1c21f5 in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x5617c4e8e4d0, item=...)
+    at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:124
 --Type <RET> for more, q to quit, c to continue without paging--
-#1  0x0000559daffec93d in TwoRW::two_rw_worker_run (s=0x55a1bceecc30) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:373
-#2  0x0000559daffe4211 in operator() (__closure=0x559deff54198) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:745
-#3  0x0000559daffe6d45 in std::__invoke_impl<void, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
-(More stack frames follow...)
+  4    Thread 0x7efe990fc6c0 (LWP 44388) "sharedkv_2rw_be" CXLSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue_batch_pipelined (
+    this=0x7efe99e8f000, items=0x7efe88000c40, max_count=64)
+    at /root/YCSB-YW/sharedkv/native/benchmark/../include/cxl_spsc_queue.h:435
+  5    Thread 0x7efe998fd6c0 (LWP 44387) "sharedkv_2rw_be" 0x00007efe99aed8c7 in __GI_sched_yield ()
+    at ../sysdeps/unix/syscall-template.S:120
+(gdb) 
 
-Thread 8 (Thread 0x7f30c602d6c0 (LWP 44758) "sharedkv_2rw_be"):
-#0  TwoRW::kv_put (req=..., base=0x7f1ff5835000, buckets=0x7f1ff0800040, num_buckets=8388608, wid=3, num_workers=16, stats=0x0, do_check=false) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:117
-#1  0x0000559daffec93d in TwoRW::two_rw_worker_run (s=0x55a1bceeccc0) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:373
+
+
+
+root@debian-615-uintr:~/YCSB-YW/sharedkv/native/benchmark# ./r
+results/              run_dequeue_batch.sh  run_poller_modes.sh
+run_benchmark.sh      run_multi_machine.sh  run_scaling.sh
+root@debian-615-uintr:~/YCSB-YW/sharedkv/native/benchmark# ./run_multi_machine.sh slave
+==========================================
+Building SharedKV Native Benchmark
+==========================================
+Running CMake...
+-- ------------------------------------
+-- Build type: Debug
+-- ------------------------------------
+-- Configuring done (0.1s)
+-- Generating done (0.0s)
+-- Build files have been written to: /root/YCSB-YW/sharedkv/native/benchmark/build
+Building...
+[100%] Built target sharedkv_2rw_benchmark
+
+==========================================
+Build complete!
+Executable: /root/YCSB-YW/sharedkv/native/benchmark/build/sharedkv_benchmark
+==========================================
+==============================================
+  Role:       slave (node 1)
+  Workload:   workloada
+  CXL:        /dev/dax0.0
+  NUMA:       1
+  Global:     n=2  m=4  s=2
+  Local SN:   [1 .. +1)
+  Local W:    [2 .. +2)
+  Local C:    [1 .. +1)
+==============================================
+
+Command:
+  ./build/sharedkv_2rw_benchmark   --workload workloada   --workload-dir /mnt/ywang/workloads   --numa 1   --num-nodes 2   --node-id 1   --cxl-device /dev/dax0.0   --num-clients 2   --num-workers 4   --num-synchronizers 2   --dequeue-batch 64   --read-ack-batch 64   --global-sn-start 1   --global-sn-count 1   --global-worker-start 2   --global-worker-count 2   --global-client-start 1   --global-client-count 1   --worker-cpu-start 3   --client-cpu-start 14   --latency   --local-workerring --verbose --counters
+
+==============================================
+SharedKV 2RW YCSB Benchmark
+==============================================
+  Workload:              workloada
+  NUMA node:             1
+  num_clients (n):       2
+  num_workers (m):       4
+  num_synchronizers (s): 2  (workers per SN: 2)
+  slots_per_client:      1024
+  num_buckets:           8388608
+  queue_depth:           1024
+  memory_size:           64 GB
+  CPU layout:
+    Poller:     CPU 0
+    SN0:        CPU 2
+    SN1:        CPU 3
+    Workers:    CPU 3..6
+    ReqTh:      CPU 14..15
+    RespTh:     CPU 16..17
+  dequeue_batch:         64
+  read_ack_batch:        64
+  local_workerring:      yes (DRAM)
+  stats:                 disabled
+  counters:              enabled
+  verbose:               enabled
+  Mode:         Latency  (auto ops/client from workload)
+==============================================
+
+[Main] Loading workload files...
+[Benchmark] Loaded 10000000 operations from /mnt/ywang/workloads/workloada_load.txt
+[Benchmark] Loaded 10000000 operations from /mnt/ywang/workloads/workloada_trans.txt
+[Main] load_ops=10000000  trans_ops=10000000
+
+  ops_per_client (auto): 5000000  (10000000 ops / 2 clients)
+  TSC frequency: ~2000 MHz
+
+[Main] Initializing 2RW context...
+[2RW Config]
+  numa_node            = 1
+  num_clients (n)      = 2
+  num_workers (m)      = 4
+  num_synchronizers(s) = 2  (workers per SN: 2)
+  slots_per_client     = 1024  (blocks pre-alloc per client)
+  num_buckets          = 8388608
+  queue_depth          = 1024
+  memory_size          = 65536 MB
+  worker_cpu_start     = 3  (workers on CPU 3..6)
+  local_workerring     = yes (DRAM)
+  poller_mode          = response
+[2RW] NUMA topology: CPU0_node=0  CXL_node=1  OK (CPU0 local DRAM != CXL node)
+[2RW] CXL device '/dev/dax0.0' mapped at 0x7fc335000000 (65536 MB)
+[2RW] Node 1: waiting for master ready_flag...
+[2RW] Node 1: attached to CXL memory, header validated.
+[2RW] sn_req_consumers[0]=0x7fd40d6b9000  NUMA node 0  (expected 0)  OK
+[2RW] sn_ring_producers[0]=0x7fd40d6b8000  NUMA node 0  (expected 0)  OK
+[2RW] sn_req_consumers[1]=0x7fd40d6b7000  NUMA node 0  (expected 0)  OK
+[2RW] sn_ring_producers[1]=0x7fd40d6b6000  NUMA node 0  (expected 0)  OK
+[2RW] local_workerring: allocated 4 DRAM rings (256 KB each)
+[2RW] sync_state[0].gsn=0x7fd40d129080  NUMA node 0  (expected 0)  OK
+[2RW] sync_state[1].gsn=0x7fd40d128080  NUMA node 0  (expected 0)  OK
+[Main] Starting core threads (Sync, Poller, Workers)...
+[2RW] Threads started: poller_mode=response, SN[1..1]=CPU[2..2], Workers[2..3]=CPU[3..4]
+[2RW] Node 1: barrier — waiting for 2 nodes...
+[2RW] Node 1: all 2 nodes ready.
+
+[Main] ===== LOAD PHASE =====
+[RespTh-1] UINTR fd=3, pinned CPU 15
+[RespPoller] Started. Monitoring clients [1..2) × 4 workers
+[SN1] GSN Microbenchmark (isolated, 500000 iters, rdtscp): 63.16 ticks/fetch_add(2)
+[SN1] sync_state->gsn address: 0x7fd40d128080
+[SN1] Started. Polling 2 RequestQueues → 2 WorkerRings (workers 2..3)
+[SN1]   Mode: dequeue_batch_pipelined (DEQUEUE_BATCH=64  READ_ACK_BATCH=64)
+[SN1]   Timing: rdtscp. A=pipelined_batch_deq/op  C=enq/op  F=flush/op
+
+===== PIPELINE DIAGNOSTIC (SIGUSR1) =====
+RequestQueues [n=2 × s=2]:
+  ReqQ[c1,sn0]: fill=4096 (w=4096 r=0)
+  ReqQ[c1,sn1]: fill=39 (w=4096 r=4057)
+WorkerRings [m=4]:
+  WR[0]: fill=0 (w=0 r=0)
+  WR[1]: fill=0 (w=0 r=0)
+  WR[2]: fill=0 (w=2048 r=2048)
+  WR[3]: fill=0 (w=2048 r=2048)
+ResponseQueues [n=2 × m=4]:
+FreeBlockQueues [n=2]:
+  FBQ[c0]: fill=0 (w=0 r=0)
+  FBQ[c1]: fill=0 (w=0 r=0)
+LocalBlockCaches [n=2]:
+  Cache[c0]: top=1024
+  Cache[c1]: top=255
+Bitmap: free=26806218 / total=26815691
+===== END DIAGNOSTIC =====
+native/benchmark# gdb -p $(pgrep sharedkv
+)
+GNU gdb (Debian 16.3-1) 16.3
+Copyright (C) 2024 Free Software Foundation, Inc.
+License GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>
+This is free software: you are free to change and redistribute it.
+There is NO WARRANTY, to the extent permitted by law.
+Type "show copying" and "show warranty" f--Type <RET> for more, q to quit, c to continue without paging--
+or details.
+This GDB was configured as "x86_64-linux-gnu".
+Type "show configuration" for configuration details.
+For bug reporting instructions, please see:
+<https://www.gnu.org/software/gdb/bugs/>.
+Find the GDB manual and other documentati--Type <RET> for more, q to quit, c to continue without paging--
+on resources online at:
+    <http://www.gnu.org/software/gdb/documentation/>.
+
+For help, type "help".
+Type "apropos word" to search for commands related to "word".
+Attaching to process 43294
+[New LWP 50495]
+[New LWP 50494]
 --Type <RET> for more, q to quit, c to continue without paging--
-#2  0x0000559daffe4211 in operator() (__closure=0x55a079f3d548) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:745
-#3  0x0000559daffe6d45 in std::__invoke_impl<void, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
-(More stack frames follow...)
+[New LWP 50493]
+[New LWP 50492]
+[New LWP 50491]
+[New LWP 50490]
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib/x86_64-linux-gnu/libthread_db.so.1".
+__syscall_cancel_arch ()
+    at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
 
-Thread 7 (Thread 0x7f30c582c6c0 (LWP 44759) "sharedkv_2rw_be"):
-#0  TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x55a07875d3e0, item=...) at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:128
-#1  0x0000559daffec7d6 in TwoRW::two_rw_worker_run (s=0x55a1bceecd50) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:353
-#2  0x0000559daffe4211 in operator() (__closure=0x55a079f3d6d8) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:745
+warning: 56     ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S: No such file or directory
+(gdb) info threads
+  Id   Target Id                                           Frame 
+* 1    Thread 0x7fd40d12a780 (LWP 43294) "sharedkv_2rw_be" __syscall_cancel_arch
+    ()
+    at ../sysdeps/unix/sysv/linux/x86_64/syscall_cancel.S:56
+  2    Thread 0x7fd40a9226c0 (LWP 50495) "sharedkv_2rw_be" CXLSpscProducer<TwoRW::KVRequest, 4096ul>::enqueue (
 --Type <RET> for more, q to quit, c to continue without paging--
-#3  0x0000559daffe6d45 in std::__invoke_impl<void, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
-(More stack frames follow...)
-
-Thread 6 (Thread 0x7f30c502b6c0 (LWP 44760) "sharedkv_2rw_be"):
-#0  0x0000559daffed049 in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x55a07875d3f8, item=...) at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:124
-#1  0x0000559daffec7d6 in TwoRW::two_rw_worker_run (s=0x55a1bceecde0) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:353
-#2  0x0000559daffe4211 in operator() (__closure=0x559deffa91d8) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:745
-#3  0x0000559daffe6d45 in std::__invoke_impl<void, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=.--Type <RET> for more, q to quit, c to continue without paging--
-..) at /usr/include/c++/14/bits/invoke.h:61
-(More stack frames follow...)
-
-Thread 5 (Thread 0x7f30c482a6c0 (LWP 44761) "sharedkv_2rw_be"):
-#0  TwoRW::kv_put (req=..., base=0x7f1ff5835000, buckets=0x7f1ff0800040, num_buckets=8388608, wid=6, num_workers=16, stats=0x0, do_check=false) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:117
-#1  0x0000559daffec93d in TwoRW::two_rw_worker_run (s=0x55a1bceece70) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:373
-#2  0x0000559daffe4211 in operator() (__closure=0x559deffa9368) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:745
-#3  0x0000559daffe6d45 in std::__invoke_impl<void, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
-(More stack frames follow...)
---Type <RET> for more, q to quit, c to continue without paging--
-
-Thread 4 (Thread 0x7f30c40296c0 (LWP 44762) "sharedkv_2rw_be"):
-#0  0x0000559daffed080 in std::__atomic_base<unsigned long>::load (this=0x55a1bccac680, __m=std::memory_order_acquire) at /usr/include/c++/14/bits/atomic_base.h:497
-#1  TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x55a07875d428, item=...) at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:128
-#2  0x0000559daffec7d6 in TwoRW::two_rw_worker_run (s=0x55a1bceecf00) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:353
-#3  0x0000559daffe4211 in operator() (__closure=0x55a078783ac8) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:745
-(More stack frames follow...)
-
-g4
-Thread 11 (Thread 0x7f5f806236c0 (LWP 44937) "sharedkv_2rw_be"):
-#0  _mm_pause () at /usr/lib/gcc/x86_64-linux-gnu/14/include/xmmintrin.h:1338
-#1  TwoRW::two_rw_worker_run (s=0x5574ceea4f90) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:426
-#2  0x00005570e149f211 in operator() (__closure=0x5574ceaa42d8) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:745
-#3  0x00005570e14a1d45 in std::__invoke_impl<void, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
-(More stack frames follow...)
-
-Thread 10 (Thread 0x7f5f7fe226c0 (LWP 44938) "sharedkv_2rw_be"):
---Type <RET> for more, q to quit, c to continue without paging--
-#0  0x00005570e14a8049 in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x55738a715458, item=...) at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:124
-#1  0x00005570e14a77d6 in TwoRW::two_rw_worker_run (s=0x5574ceea5020) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:353
-#2  0x00005570e149f211 in operator() (__closure=0x557101f11a38) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:745
-#3  0x00005570e14a1d45 in std::__invoke_impl<void, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
-(More stack frames follow...)
-
---Type <RET> for more, q to quit, c to continue without paging--
-Thread 9 (Thread 0x7f5f7f6216c0 (LWP 44939) "sharedkv_2rw_be"):
-#0  0x00005570e14a8049 in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x55738a715470, item=...) at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:124
-#1  0x00005570e14a77d6 in TwoRW::two_rw_worker_run (s=0x5574ceea50b0) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:353
-#2  0x00005570e149f211 in operator() (__closure=0x557101f0c198) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:745
-#3  0x00005570e14a1d45 in std::__invoke_impl<void, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
-(More stack frames follow...)
---Type <RET> for more, q to quit, c to continue without paging--
-
-Thread 8 (Thread 0x7f5f7ee206c0 (LWP 44940) "sharedkv_2rw_be"):
-#0  0x00005570e14a8049 in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x55738a715488, item=...) at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:124
-#1  0x00005570e14a77d6 in TwoRW::two_rw_worker_run (s=0x5574ceea5140) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:353
-#2  0x00005570e149f211 in operator() (__closure=0x55738bef5548) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:745
-#3  0x00005570e14a1d45 in std::__invoke_impl<void, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
-(More stack frames follow...)
-
---Type <RET> for more, q to quit, c to continue without paging--
-Thread 7 (Thread 0x7f5f7e61f6c0 (LWP 44941) "sharedkv_2rw_be"):
-#0  _mm_pause () at /usr/lib/gcc/x86_64-linux-gnu/14/include/xmmintrin.h:1338
-#1  TwoRW::two_rw_worker_run (s=0x5574ceea51d0) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:426
-#2  0x00005570e149f211 in operator() (__closure=0x55738bef56d8) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:745
-#3  0x00005570e14a1d45 in std::__invoke_impl<void, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
-(More stack frames follow...)
-
-Thread 6 (Thread 0x7f5f7de1e6c0 (LWP 44942) "sharedkv_2rw_be"):
-#0  0x00005570e14a8049 in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x55738a715--Type <RET> for more, q to quit, c to continue without paging--
-4b8, item=...) at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:124
-#1  0x00005570e14a77d6 in TwoRW::two_rw_worker_run (s=0x5574ceea5260) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:353
-#2  0x00005570e149f211 in operator() (__closure=0x557101f611d8) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:745
-#3  0x00005570e14a1d45 in std::__invoke_impl<void, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
-(More stack frames follow...)
-
-Thread 5 (Thread 0x7f5f7d61d6c0 (LWP 44943) "sharedkv_2rw_be"):
-#0  0x00005570e14a8049 in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x55738a7154d0, item=...) at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:124
---Type <RET> for more, q to quit, c to continue without paging--
-#1  0x00005570e14a77d6 in TwoRW::two_rw_worker_run (s=0x5574ceea52f0) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:353
-#2  0x00005570e149f211 in operator() (__closure=0x557101f61368) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:745
-#3  0x00005570e14a1d45 in std::__invoke_impl<void, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
-(More stack frames follow...)
-
-Thread 4 (Thread 0x7f5f7ce1c6c0 (LWP 44944) "sharedkv_2rw_be"):
-#0  _mm_pause () at /usr/lib/gcc/x86_64-linux-gnu/14/include/xmmintrin.h:1338
-#1  TwoRW::two_rw_worker_run (s=0x5574ceea5380) at /root/YCSB-YW/sharedkv/native/src/2rw_worker.cpp:426
---Type <RET> for more, q to quit, c to continue without paging--
-#2  0x00005570e149f211 in operator() (__closure=0x55738a73bac8) at /root/YCSB-YW/sharedkv/native/src/2rw_context.cpp:745
-#3  0x00005570e14a1d45 in std::__invoke_impl<void, TwoRW::two_rw_start_threads(TwoRWContext*)::<lambda()> >(std::__invoke_other, struct {...} &&) (__f=...) at /usr/include/c++/14/bits/invoke.h:61
-(More stack frames follow...)
+    this=0x5636975a3860, item=...)
+    at /root/YCSB-YW/sharedkv/native/benchmark/../include/cxl_spsc_queue.h:201
+  3    Thread 0x7fd40b1236c0 (LWP 50494) "sharedkv_2rw_be" syscall ()
+    at ../sysdeps/unix/sysv/linux/x86_64/syscall.S:38
+  4    Thread 0x7fd40b9246c0 (LWP 50493) "sharedkv_2rw_be" _mm_pause ()
+    at /usr/lib/gcc/x86_64-linux-gnu/14/i--Type <RET> for more, q to quit, c to continue without paging--
+nclude/xmmintrin.h:1338
+  5    Thread 0x7fd40c1256c0 (LWP 50492) "sharedkv_2rw_be" 0x000056340b3191f5 in TwoRW::LocalSpscConsumer<TwoRW::KVRequest, 4096ul>::dequeue (this=0x563696faf500, 
+    item=...)
+    at /root/YCSB-YW/sharedkv/native/benchmark/../include/local_spsc_queue.h:124
+  6    Thread 0x7fd40c9266c0 (LWP 50491) "sharedkv_2rw_be" CXLSpscConsumer<TwoRW::--Type <RET> for more, q to quit, c to continue without paging--
+KVRequest, 4096ul>::dequeue_batch_pipelined (this=0x7fd40d6b7000, 
+    items=0x7fd400000c40, max_count=64)
+    at /root/YCSB-YW/sharedkv/native/benchmark/../include/cxl_spsc_queue.h:435
+  7    Thread 0x7fd40d1276c0 (LWP 50490) "sharedkv_2rw_be" 0x00007fd40d3178c7 in __GI_sched_yield ()
+    at ../sysdeps/unix/syscall-template.S:120
+(gdb) 

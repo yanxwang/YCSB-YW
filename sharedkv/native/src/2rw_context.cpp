@@ -151,8 +151,11 @@ static void init_cxl_memory(void* base, const TwoRWLayout& L,
         }
     }
 
-    // Signal CXL memory is fully initialized (multi-machine: worker nodes spin on this)
+    // Signal CXL memory is fully initialized (multi-machine: worker nodes spin on this).
+    // Flush to CXL DRAM so remote nodes see it via CLFLUSHOPT.
     hdr->ready_flag = HEADER_READY;
+    _mm_sfence();
+    _mm_clflushopt(&hdr->ready_flag);
     _mm_sfence();
     fprintf(stderr, "[2RW] CXL memory initialized. Layout:\n");
     L.print();
@@ -769,6 +772,8 @@ void two_rw_stop(TwoRWContext* ctx) {
         ctx->cxl_global_stop_flag) {
         *ctx->cxl_global_stop_flag = 1;
         _mm_sfence();
+        _mm_clflushopt(const_cast<uint32_t*>(ctx->cxl_global_stop_flag));
+        _mm_sfence();
         fprintf(stderr, "[2RW] Master: CXL global_stop_flag set\n");
     }
 
@@ -821,8 +826,14 @@ void two_rw_node_barrier(TwoRWContext* ctx) {
     const uint32_t node_id   = ctx->config.node_id;
     const uint32_t num_nodes = ctx->config.num_nodes;
 
-    // Set this node's ready flag
+    // Set this node's ready flag and flush to CXL DRAM.
+    // Regular store + SFENCE (drain store buffer → dirty in cache) +
+    // CLFLUSHOPT (flush dirty → CXL DRAM) + SFENCE (ensure complete).
+    // Without the CLFLUSHOPT, the flag stays in local cache and remote
+    // nodes polling via CLFLUSHOPT never see it.
     ctx->cxl_node_sync->node_ready[node_id] = 1;
+    _mm_sfence();
+    _mm_clflushopt(const_cast<uint32_t*>(&ctx->cxl_node_sync->node_ready[node_id]));
     _mm_sfence();
 
     fprintf(stderr, "[2RW] Node %u: barrier — waiting for %u nodes...\n",

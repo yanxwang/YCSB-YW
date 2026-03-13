@@ -115,14 +115,25 @@ static KVResponse kv_put(const KVRequest& req, void* base,
         uint64_t spin = 0;
         while (block_new->key_hash != req.key_hash || block_new->key_len != req.key_len) {
             if (__builtin_expect(++spin == 1000000, 0)) {
+                // Dump full block header vs req for diagnosis
+                const char* bdata = block_new->data;
                 fprintf(stderr,
-                    "[W%u] block visibility STUCK: block_id=%u block@%p "
-                    "block->key_hash=0x%08x req.key_hash=0x%08x "
-                    "block->key_len=%u req.key_len=%u client_id=%u\n",
-                    wid, req.block_id, (void*)block_new,
-                    block_new->key_hash, req.key_hash,
-                    block_new->key_len, req.key_len,
-                    req.client_id);
+                    "[W%u] block visibility STUCK: block_id=%u block@%p client_id=%u\n"
+                    "  req:   key_hash=0x%08x key_len=%u op_type=%u\n"
+                    "  block: key_hash=0x%08x key_len=%u val_len=%u is_external=%u\n"
+                    "         next_block_id=%lu gsn=%lu t0=%lu\n"
+                    "         key[0..15]: %02x %02x %02x %02x %02x %02x %02x %02x"
+                    " %02x %02x %02x %02x %02x %02x %02x %02x\n",
+                    wid, req.block_id, (void*)block_new, req.client_id,
+                    req.key_hash, (unsigned)req.key_len, (unsigned)req.op_type,
+                    block_new->key_hash, (unsigned)block_new->key_len,
+                    block_new->val_len, (unsigned)block_new->is_external,
+                    (unsigned long)block_new->next_block_id,
+                    (unsigned long)block_new->gsn, (unsigned long)block_new->t0,
+                    (uint8_t)bdata[0],  (uint8_t)bdata[1],  (uint8_t)bdata[2],  (uint8_t)bdata[3],
+                    (uint8_t)bdata[4],  (uint8_t)bdata[5],  (uint8_t)bdata[6],  (uint8_t)bdata[7],
+                    (uint8_t)bdata[8],  (uint8_t)bdata[9],  (uint8_t)bdata[10], (uint8_t)bdata[11],
+                    (uint8_t)bdata[12], (uint8_t)bdata[13], (uint8_t)bdata[14], (uint8_t)bdata[15]);
             }
             _mm_pause();
             cxl_clflushopt(block_new);
@@ -218,11 +229,24 @@ static KVResponse kv_get(const KVRequest& req, void* base,
         uint64_t spin = 0;
         while (req_block->key_hash != req.key_hash || req_block->key_len != req.key_len) {
             if (__builtin_expect(++spin == 1000000, 0)) {
+                const char* bdata = req_block->data;
                 fprintf(stderr,
-                    "[W%u] GET block visibility STUCK: block_id=%u block@%p "
-                    "block->key_hash=0x%08x req.key_hash=0x%08x client_id=%u\n",
-                    wid, req.block_id, (void*)req_block,
-                    req_block->key_hash, req.key_hash, req.client_id);
+                    "[W%u] GET block visibility STUCK: block_id=%u block@%p client_id=%u\n"
+                    "  req:   key_hash=0x%08x key_len=%u op_type=%u\n"
+                    "  block: key_hash=0x%08x key_len=%u val_len=%u is_external=%u\n"
+                    "         next_block_id=%lu gsn=%lu t0=%lu\n"
+                    "         key[0..15]: %02x %02x %02x %02x %02x %02x %02x %02x"
+                    " %02x %02x %02x %02x %02x %02x %02x %02x\n",
+                    wid, req.block_id, (void*)req_block, req.client_id,
+                    req.key_hash, (unsigned)req.key_len, (unsigned)req.op_type,
+                    req_block->key_hash, (unsigned)req_block->key_len,
+                    req_block->val_len, (unsigned)req_block->is_external,
+                    (unsigned long)req_block->next_block_id,
+                    (unsigned long)req_block->gsn, (unsigned long)req_block->t0,
+                    (uint8_t)bdata[0],  (uint8_t)bdata[1],  (uint8_t)bdata[2],  (uint8_t)bdata[3],
+                    (uint8_t)bdata[4],  (uint8_t)bdata[5],  (uint8_t)bdata[6],  (uint8_t)bdata[7],
+                    (uint8_t)bdata[8],  (uint8_t)bdata[9],  (uint8_t)bdata[10], (uint8_t)bdata[11],
+                    (uint8_t)bdata[12], (uint8_t)bdata[13], (uint8_t)bdata[14], (uint8_t)bdata[15]);
             }
             _mm_pause();
             cxl_clflushopt(req_block);
